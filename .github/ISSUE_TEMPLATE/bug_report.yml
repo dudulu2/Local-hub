@@ -1,0 +1,84 @@
+name: Bug report
+description: 报告 LocalHub 的功能、播放、预览或文件整理问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供最小复现信息，不要上传私人媒体文件本体、真实私人目录或敏感数据。
+
+  - type: input
+    id: version
+    attributes:
+      label: LocalHub 版本
+      description: 例如 v2.0.0，或下载的 Release / commit。
+      placeholder: v2.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题类型
+      options:
+        - 启动 / SmartScreen
+        - 首页 / 文件夹导航
+        - 搜索
+        - 视频播放
+        - 缩略图 / 预览
+        - 图包 / 图片
+        - Tag / 评分 / 收藏
+        - 改名 / 移动
+        - 性能 / 大型媒体库
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序描述如何稳定触发问题。
+      placeholder: |
+        1. 打开……
+        2. 点击……
+        3. 出现……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+    validations:
+      required: true
+
+  - type: input
+    id: media
+    attributes:
+      label: 媒体格式 / 编码（如相关）
+      description: 只需提供扩展名或 ffprobe / MediaInfo 的非敏感信息，不要上传私人媒体。
+      placeholder: MKV / H.265 / AAC
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他信息
+      description: 可附截图、日志片段或其他有助于定位的信息。请先移除私人路径和敏感数据。

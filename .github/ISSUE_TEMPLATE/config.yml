@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Windows SmartScreen / 未知发布者说明
+    url: https://github.com/dudulu2/local-web/blob/main/docs/windows-smartscreen.md
+    about: 如果只是第一次运行 EXE 时看到 Windows 警告，请先阅读这里。
