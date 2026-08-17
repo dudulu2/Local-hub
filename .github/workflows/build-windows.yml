@@ -11,6 +11,8 @@ on:
       - 'smart_mode.py'
       - 'smart_thumbnail.py'
       - 'preview_support.py'
+      - 'media_probe.py'
+      - 'compat_support.py'
       - 'catalog_cache.py'
       - 'smart_index.html'
       - 'smart_ui.css'
@@ -39,7 +41,7 @@ jobs:
         run: python -m pip install --upgrade pyinstaller pystray pillow imageio-ffmpeg comtypes
 
       - name: Validate Python
-        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py catalog_cache.py tools/smoke_smart.py tools/smoke_preview.py
+        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py media_probe.py compat_support.py catalog_cache.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py
 
       - name: Validate frontend JavaScript
         shell: pwsh
@@ -50,6 +52,9 @@ jobs:
 
       - name: Preview extraction smoke test
         run: python tools/smoke_preview.py
+
+      - name: Media compatibility smoke test
+        run: python tools/smoke_compat.py
 
       - name: Generate application icon
         run: python tools/make_icon.py
