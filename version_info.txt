@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 2, 0, 0),
-    prodvers=(2, 2, 0, 0),
+    filevers=(2, 2, 1, 0),
+    prodvers=(2, 2, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -14,12 +14,12 @@ VSVersionInfo(
       StringTable(
         '080404B0',
         [StringStruct('CompanyName', 'LocalHub Project'),
-         StringStruct('FileDescription', 'LocalHub 2.2 本地媒体库'),
-         StringStruct('FileVersion', '2.2.0'),
+         StringStruct('FileDescription', 'LocalHub 2.2.1 本地媒体库'),
+         StringStruct('FileVersion', '2.2.1'),
          StringStruct('InternalName', 'LocalHub'),
          StringStruct('OriginalFilename', 'LocalHub.exe'),
          StringStruct('ProductName', 'LocalHub'),
-         StringStruct('ProductVersion', '2.2.0')])
+         StringStruct('ProductVersion', '2.2.1')])
     ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]
