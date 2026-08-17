@@ -1,3 +1,4 @@
+# LocalHub 2.2.1 hotfix verification build
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(2, 2, 1, 0),
