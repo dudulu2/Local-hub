@@ -1,143 +1,116 @@
-# LocalHub
+# LocalHub 2
 
-LocalHub 是一个完全本地运行的媒体浏览器和整理工具：把普通视频 / 图片文件夹变成类似视频网站的本地媒体库，同时支持 Tag、收藏、继续观看、改名和移动文件。
+LocalHub 是一个完全本地运行的媒体浏览器和整理工具。它把普通视频 / 图片目录变成一个带文件夹导航、图包、Tag、收藏、继续观看、改名和移动能力的本地媒体站。
 
-## 普通用户：只需要 LocalHub.exe
+## 使用
 
-Windows 用户不再需要 BAT、命令行、Python 或安装依赖。
-
-1. 从 GitHub Actions 的 `LocalHub-Windows-x64` 构建产物，或版本 Release 中下载 `LocalHub.exe`。
-2. 把 `LocalHub.exe` 放到你要浏览的媒体总目录。
-3. 双击 `LocalHub.exe`。
-4. LocalHub 会无黑框启动本地服务，并自动打开浏览器。
-
-示例：
+Windows 用户只需要 `LocalHub.exe`：把 EXE 放进媒体总目录后双击即可。程序无控制台窗口启动，自动打开浏览器，并在 Windows 托盘提供“打开 LocalHub / 打开媒体文件夹 / 退出 LocalHub”。默认只监听 `127.0.0.1`，媒体不会上传互联网。
 
 ```text
 媒体库/
 ├─ LocalHub.exe
-├─ 视频/
-│  ├─ A.mp4
-│  └─ B.webm
-└─ 图片/
-   ├─ 1.jpg
-   └─ 2.png
+├─ video-a.mp4
+├─ 视频合集/
+│  ├─ episode-01.mp4
+│  └─ episode-02.mp4
+└─ 图包/
+   ├─ 001.jpg
+   ├─ 002.jpg
+   └─ 003.jpg
 ```
 
-LocalHub 会递归扫描 EXE 所在目录和所有子目录。
+## LocalHub 2 的媒体模型
 
-## Windows 启动体验
+LocalHub 2 不再把整个目录做成一个几千项的首页媒体墙。
 
-`LocalHub.exe` 是单文件便携程序：
+- **首页固定为轻量推荐页**：优先显示根目录视频，最多 15 个；不足时从不同文件夹抽取视频补足，目标为 13–15 个。
+- **左侧文件夹导航**：完整媒体库通过文件夹、全部视频、图包 / 图册、搜索、收藏和继续观看进入。
+- **多图片文件夹 = 图包 / 一本书**：同一文件夹内有 2 张以上图片时，只显示一个图包卡片，首张图片作为封面；打开图包后才逐张读取原图。
+- **混合文件夹**：视频继续独立展示，多张图片折叠成一个图包卡片。
+- **分类页真正分页**：每页最多 30 项；上一页 / 下一页切换会释放上一页缩略图对象，不使用无限追加媒体墙。
+- **搜索查内存索引**：浏览器不会下载全库 JSON 再筛选。
 
-- 双击直接启动，不出现 CMD / PowerShell 黑框。
-- 自动打开浏览器中的 LocalHub 页面。
-- 启动后在 Windows 托盘区保留 LocalHub 图标。
-- 托盘右键可“打开 LocalHub”“打开媒体文件夹”“退出 LocalHub”。
-- 同一个媒体目录重复双击 EXE 不会启动第二个服务器，而是直接打开已经运行的 LocalHub。
-- 不安装系统服务，不写注册表，不需要管理员权限。
-- 默认只监听 `127.0.0.1`，媒体不会上传互联网。
+## 性能架构
 
-运行时数据保存在媒体目录内：
+### 1. 元数据索引
+
+第一次运行会扫描媒体目录并建立轻量目录索引。索引只保存文件名、相对路径、类型、大小、修改时间和 Tag 等元数据，不保存媒体内容。
 
 ```text
 .localhub/
-├─ metadata.json   # Tag 等媒体元数据
-└─ runtime.json    # 当前运行实例信息，退出后自动删除
+├─ metadata.json     # Tag
+├─ catalog-v2.json   # 轻量媒体索引快照
+└─ runtime.json      # 运行实例信息，退出后删除
 ```
 
-`.localhub` 不会出现在媒体扫描结果里。
+第二次启动可以先读取 `catalog-v2.json` 立即提供首页 / 搜索 / 文件夹导航，再在后台刷新真实目录。
 
-## 主要功能
+### 2. 缩略图不再使用列表中的 `<video>`
 
-- 自动递归扫描本地视频和图片
-- 深色高对比视频网站式媒体墙
-- 视频 / 图片 / 收藏 / 继续观看分类
-- 文件夹导航
-- Tag 导航和搜索
-- 每个视频卡片下方固定 Tag 条
-- 卡片上直接快速增删 Tag
-- 播放器旁整理面板
-- 批量添加 Tag、批量移动
+媒体卡片不会挂真实视频流。鼠标移动到卡片上也不会开始读取视频。
+
+缩略图按以下顺序获取：
+
+1. Windows Shell / Explorer 共享缩略图缓存。
+2. 图片使用轻量 PIL 缩放。
+3. 视频缓存未命中时，FFmpeg 输入端快速 seek 到附近位置，只抽 1 帧。
+
+前端只为当前视口及下一排请求缩略图，同时最多 2 个请求在执行。
+
+### 3. LocalHub 自己不保存缩略图文件
+
+LocalHub 2 不再维护 `.localhub/thumbnails/`。旧版本留下的该目录会在启动后异步清理。
+
+- LocalHub 进程只保留最多约 48 张缩略图的短时内存 LRU。
+- 缓存约 3 分钟后可淘汰。
+- 浏览器缩略图请求使用 `no-store`。
+- 切页 / 换分类会撤销上一页的 Blob Object URL。
+- Windows 自己的系统共享缩略图缓存由 Windows 管理，不属于 LocalHub 的文件缓存。
+
+### 4. 真正播放时才加载视频
+
+只有点击视频进入播放器后，浏览器才请求 `/media/...`。视频服务支持 HTTP Range，因此大文件可以拖动进度条，不需要一次读取完整视频。
+
+## 整理能力
+
+- 视频卡片下方固定 Tag 条
+- 卡片内快速调整 Tag
+- 播放器整理面板
+- Tag 搜索
+- 收藏、继续观看
 - 改文件名并保留扩展名
-- 移动到已有或新建文件夹
-- 改名 / 移动后保持 Tag、收藏和播放进度
-- 名称、修改时间、文件大小排序
-- 视频拖动进度、全屏、倍速等浏览器原生控制
-- HTTP Range 分段读取，大视频无需一次载入内存
-- 图片大图查看
-- 上一个 / 下一个与方向键切换
-- 自动记忆播放位置
-- 响应式桌面 / 窄屏布局
+- 移动到已有 / 新建目录
+- 改名 / 移动后迁移收藏和播放进度
+- Tag 保存在 `.localhub/metadata.json`，不修改媒体文件本体
+- 同名目标文件不会被覆盖
 
 ## 支持格式
 
-### 图片
+图片：`jpg jpeg png webp gif avif bmp svg`
 
-`jpg jpeg png webp gif avif bmp svg`
+视频：`mp4 webm m4v mov mkv avi ogv mpeg mpg ts`
 
-### 视频
+是否能直接播放仍取决于浏览器对内部视频 / 音频编码的支持。
 
-`mp4 webm m4v mov mkv avi ogv mpeg mpg ts`
+## Windows EXE 构建
 
-能否直接播放取决于浏览器是否支持文件内部编码。Chrome / Edge 对 MP4（H.264/AAC）、WebM 通常支持最好；部分 MKV、AVI 或特殊编码可能能被扫描但不能直接播放。
-
-## 快捷键
-
-- `/`：聚焦搜索框
-- `E`：播放器内展开 / 收起整理面板
-- `←`：上一个媒体
-- `→`：下一个媒体
-- `Esc`：关闭查看器
-
-## 开发者运行
-
-源码模式仍可直接运行：
-
-```bash
-python server.py
-```
-
-指定媒体目录：
-
-```bash
-python server.py --root "D:\Videos"
-```
-
-## 本地构建 Windows EXE
-
-开发者可在 Windows PowerShell 中运行：
+普通用户不需要 Python。开发者可运行：
 
 ```powershell
 .\build_windows.ps1
 ```
 
-脚本会安装构建依赖、生成 LocalHub 图标，并输出：
+GitHub Actions 会自动执行：
 
-```text
-dist/LocalHub.exe
-dist/SHA256.txt
-```
+1. Python 语法校验
+2. 前端 JavaScript 语法校验
+3. LocalHub 2 目录 / 首页 / 图包 smoke test
+4. Windows GUI EXE 构建
+5. SHA256 生成
+6. Artifact 上传
 
-普通用户不需要执行这个脚本。
+构建依赖包含 `PyInstaller`、`Pillow`、`imageio-ffmpeg`、`comtypes` 和 `pystray`。
 
-## GitHub 自动构建
+## 隐私
 
-`.github/workflows/build-windows.yml` 会在相关文件推送到 `main` 后自动：
-
-1. 使用 Windows runner 和 Python 3.12。
-2. 通过 PyInstaller 打包单文件、无控制台窗口的 `LocalHub.exe`。
-3. 生成 Windows 应用图标和版本信息。
-4. 生成 SHA256。
-5. 上传 `LocalHub-Windows-x64` Artifact。
-6. 当推送 `v*` Tag 时，同时发布 GitHub Release。
-
-## 隐私与文件安全
-
-LocalHub 默认只绑定本机回环地址 `127.0.0.1`。媒体通过本机 HTTP 服务直接提供给自己的浏览器，不上传到互联网。
-
-文件改名和移动会真实作用于本地文件；程序会阻止 Windows 非法文件名和同名覆盖。Tag 只保存在 `.localhub/metadata.json` 中，不修改视频文件本体。
-
-## 设计说明
-
-视觉思路参考大型视频站常见的黑色背景、高密度缩略图和醒目强调色，但 LocalHub 是独立实现，不使用第三方品牌名称、Logo 或素材；重点针对本地媒体场景增加 Tag、文件移动、改名、收藏和继续观看等能力。
+LocalHub 默认只绑定 `127.0.0.1`。媒体通过本机 HTTP 服务提供给本机浏览器，不上传到远程服务器。文件改名 / 移动会真实作用于本地文件，请像操作文件管理器一样对待这些整理功能。
