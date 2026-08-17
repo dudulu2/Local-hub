@@ -6,7 +6,7 @@ if (-not $python) {
     throw '未找到 Python。开发者本地构建需要 Python 3.11+；普通用户直接下载 LocalHub.exe 即可。'
 }
 
-python -m pip install --upgrade pyinstaller pystray pillow imageio-ffmpeg
+python -m pip install --upgrade pyinstaller pystray pillow imageio-ffmpeg comtypes
 python tools/make_icon.py
 python -m PyInstaller --noconfirm --clean LocalHub.spec
 
