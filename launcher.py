@@ -20,6 +20,14 @@ PREFERRED_PORT = 8787
 RUNTIME_FILE = "runtime.json"
 ERROR_ALREADY_EXISTS = 183
 
+# LocalHub talks only to its own loopback HTTP server. Never let Windows proxy,
+# VPN, PAC, or capture-software settings route these requests away from 127.0.0.1.
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def local_urlopen(request_or_url, timeout: float = 1.0):
+    return _LOCAL_OPENER.open(request_or_url, timeout=timeout)
+
 
 def media_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -53,6 +61,19 @@ def write_startup_log(root: Path, message: str) -> Path | None:
         return None
 
 
+def write_server_log(root: Path, message: str) -> Path | None:
+    try:
+        folder = data_dir(root)
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "server-error.log"
+        with target.open("a", encoding="utf-8") as fp:
+            fp.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}]\n")
+            fp.write(message.rstrip() + "\n")
+        return target
+    except OSError:
+        return None
+
+
 def acquire_instance_mutex(root: Path):
     if os.name != "nt":
         return None, False
@@ -65,7 +86,7 @@ def acquire_instance_mutex(root: Path):
 def server_header_is_localhub(url: str, timeout: float = 0.6) -> bool:
     request = urllib.request.Request(url, method="HEAD")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with local_urlopen(request, timeout=timeout) as response:
             return response.headers.get("Server", "").startswith("LocalHub/")
     except urllib.error.HTTPError as exc:
         return exc.headers.get("Server", "").startswith("LocalHub/")
@@ -103,11 +124,12 @@ def wait_existing_url(root: Path, seconds: float = 8.0) -> str | None:
 
 
 def wait_health(base_url: str, seconds: float = 8.0) -> bool:
+    """Probe LocalHub directly on loopback, explicitly bypassing all proxies."""
     url = base_url.rstrip("/") + "/api/health"
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=0.6) as response:
+            with local_urlopen(url, timeout=0.6) as response:
                 if response.status == 200:
                     payload = json.loads(response.read().decode("utf-8"))
                     return payload.get("ok") is True
@@ -184,16 +206,22 @@ def configure_server(root: Path):
 
 
 def create_http_server(root: Path):
-    """Create and bind the HTTP server synchronously so startup failures cannot hide in a thread."""
+    """Synchronously bind the HTTP server and persist request-thread exceptions."""
     server_module = configure_server(root)
     store = server_module.MediaStore(root)
     handler = server_module.make_handler(store)
+
+    class LoggedThreadingHTTPServer(server_module.ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            detail = "".join(traceback.format_exception(*sys.exc_info()))
+            write_server_log(root, f"client={client_address!r}\n{detail}")
+
     try:
-        httpd = server_module.ThreadingHTTPServer((HOST, PREFERRED_PORT), handler)
+        httpd = LoggedThreadingHTTPServer((HOST, PREFERRED_PORT), handler)
     except OSError:
-        # Port 8787 is only a preference. Let Windows atomically allocate a free
-        # port instead of probing then racing another process for the same port.
-        httpd = server_module.ThreadingHTTPServer((HOST, 0), handler)
+        # 8787 is only a preference. Let Windows atomically choose a free port;
+        # do not probe first and introduce a bind race.
+        httpd = LoggedThreadingHTTPServer((HOST, 0), handler)
     httpd.daemon_threads = True
     httpd.quiet = True
     port = int(httpd.server_address[1])
@@ -201,7 +229,7 @@ def create_http_server(root: Path):
 
 
 def self_test() -> int:
-    """Exercise the *real packaged startup path*, including an actual HTTP server."""
+    """Exercise the real packaged startup path, including actual HTTP requests."""
     httpd = None
     try:
         import server
@@ -221,11 +249,11 @@ def self_test() -> int:
             base = f"http://{HOST}:{port}"
             if not wait_health(base, 5.0):
                 return 30
-            with urllib.request.urlopen(base + "/", timeout=3.0) as response:
+            with local_urlopen(base + "/", timeout=3.0) as response:
                 body = response.read(4096)
                 if response.status != 200 or b"LocalHub" not in body:
                     return 31
-            with urllib.request.urlopen(base + "/api/smart/home", timeout=5.0) as response:
+            with local_urlopen(base + "/api/smart/home", timeout=5.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 if "items" not in payload or "stats" not in payload:
                     return 32
@@ -318,14 +346,21 @@ def main() -> int:
         )
         thread.start()
 
-        if not wait_health(url):
-            raise RuntimeError("HTTP 服务已创建，但健康检查没有响应。")
+        # Binding succeeded synchronously above. Do not make successful startup
+        # depend on a localhost HTTP probe: corporate proxies/VPN/PAC/security
+        # software can interfere with client-side probes even while the server is
+        # perfectly healthy. A dead server thread is still a hard failure.
+        time.sleep(0.12)
+        if not thread.is_alive():
+            raise RuntimeError("HTTP 服务线程启动后立即退出。")
 
         write_runtime(root, port)
         try:
             (data_dir(root) / "startup-error.log").unlink(missing_ok=True)
+            (data_dir(root) / "server-error.log").unlink(missing_ok=True)
         except OSError:
             pass
+
         webbrowser.open(url)
         run_tray(root, url, httpd)
         return 0
