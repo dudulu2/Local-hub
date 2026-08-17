@@ -1,0 +1,37 @@
+/* LocalHub UX refinements: keep organizing lightweight and secondary to viewing. */
+.tag-strip,.viewer-tag-strip{display:flex;align-items:center;gap:6px;min-width:0}
+.tag-strip{overflow:hidden}
+.tag-edit,.viewer-tag-add{flex:0 0 auto}
+.inline-tag-editor{height:24px;min-width:84px;max-width:150px;border:1px solid #3a3a3f;background:#111114;color:#e7e7ea;border-radius:6px;padding:0 7px;font-size:11px;outline:none}
+.inline-tag-editor:focus{border-color:#66666e;background:#161619}
+.tag-edit.editing,.viewer-tag-add.editing{opacity:.35}
+.tag-remove-inline{display:inline-block;margin-left:4px;opacity:0;font-size:11px;line-height:1;transform:translateY(-.5px);transition:opacity .12s ease;color:#8c8c92}
+.tag-chip:hover .tag-remove-inline,.viewer-tag-chip:hover .tag-remove-inline{opacity:.75}
+.tag-remove-inline:hover{opacity:1!important;color:#d7d7dc}
+
+.rating-inline{margin-left:auto;display:inline-flex;align-items:center;justify-content:flex-end;flex:0 0 auto;color:#7b7b82;font-size:11px;position:relative;min-width:27px}
+.rating-summary{border:0;background:transparent;color:#77777e;font:inherit;padding:2px 3px;cursor:pointer;white-space:nowrap}
+.rating-inline[data-rating-value]:not([data-rating-value="0"]) .rating-summary{color:#9a9aa0}
+.rating-stars{display:none;align-items:center;gap:1px;margin-left:2px}
+.rating-inline:hover .rating-stars,.rating-inline.expanded .rating-stars{display:inline-flex}
+.rating-inline:hover .rating-summary,.rating-inline.expanded .rating-summary{display:none}
+.rating-stars button{border:0;background:transparent;color:#85858c;font-size:12px;padding:1px;cursor:pointer;line-height:1}
+.rating-stars button:hover{color:#c2c2c7;transform:translateY(-1px)}
+.viewer-tag-strip .rating-inline{margin-left:10px}
+
+.viewer-title-row{align-items:center}
+#viewerTitle{cursor:text}
+#viewerTitle::after{content:''}
+#viewerTitle:hover{text-decoration:underline;text-decoration-color:#38383d;text-decoration-thickness:1px;text-underline-offset:4px}
+#viewerTitle.renaming{display:none}
+.inline-rename{min-width:260px;max-width:min(60vw,720px);height:38px;border:1px solid #44444a;background:#111114;color:#f2f2f3;border-radius:7px;padding:0 10px;font:inherit;font-weight:750;outline:none}
+.inline-rename:focus{border-color:#777780}
+.inline-rename-ext{color:#777780;margin-left:4px;font-size:14px;white-space:nowrap}
+
+/* Compatibility is automatic. Keep the manual button available to JS but out of the normal UI. */
+#compatBtn{display:none}
+.player-notice{left:16px!important;right:auto!important;top:auto!important;bottom:16px!important;width:auto!important;max-width:min(70%,620px)!important;min-width:0!important;padding:8px 11px!important;border-radius:8px!important;background:rgba(16,16,18,.88)!important;backdrop-filter:blur(8px);box-shadow:none!important;text-align:left!important;pointer-events:none}
+.player-notice strong{font-size:12px!important}.player-notice span{font-size:11px!important;color:#9b9ba1!important}.compat-progress{margin-top:6px!important;height:3px!important}
+
+/* The old tag modal is retained only for backwards-compatible markup; normal UX never opens it. */
+#tagDialog{display:none!important}
