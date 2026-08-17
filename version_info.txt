@@ -1,3 +1,4 @@
+# CI verification: LocalHub 2.2.3 proxy-isolated startup
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(2, 2, 3, 0),
