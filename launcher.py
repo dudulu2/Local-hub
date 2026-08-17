@@ -185,9 +185,13 @@ def main() -> int:
     try:
         import server
         import smart_mode
+        import catalog_cache
 
-        # LocalHub 2: the browser receives only the current page, while a
-        # lightweight in-memory catalog handles search/folders/collections.
+        # LocalHub 2 boots from a compact metadata snapshot when available, then
+        # refreshes the real filesystem index in the background. No media bytes
+        # are stored in this snapshot.
+        catalog_cache.cleanup_legacy_thumbnail_cache(root)
+        catalog_cache.install(smart_mode)
         smart_mode.install(server)
 
         port = server.pick_port(HOST, PREFERRED_PORT)
