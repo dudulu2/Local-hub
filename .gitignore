@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.build-venv/
+build/
+dist/
+build_assets/
+.localhub/
