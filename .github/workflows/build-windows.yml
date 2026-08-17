@@ -97,12 +97,16 @@ jobs:
       - name: Build one-file executable
         run: pyinstaller --noconfirm --clean LocalHub.spec
 
-      - name: Execute packaged EXE self-test
+      - name: Execute packaged EXE self-test behind hostile proxy
         shell: pwsh
         run: |
+          $env:HTTP_PROXY = 'http://127.0.0.1:9'
+          $env:HTTPS_PROXY = 'http://127.0.0.1:9'
+          $env:ALL_PROXY = 'http://127.0.0.1:9'
+          $env:NO_PROXY = ''
           $p = Start-Process -FilePath .\dist\LocalHub.exe -ArgumentList '--self-test' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub self-test failed with exit code $($p.ExitCode)" }
-          Write-Host "Packaged LocalHub self-test passed"
+          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub proxy-isolation self-test failed with exit code $($p.ExitCode)" }
+          Write-Host "Packaged LocalHub proxy-isolation self-test passed"
 
       - name: Generate SHA256
         shell: pwsh
