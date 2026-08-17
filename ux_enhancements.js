@@ -164,15 +164,23 @@
     const meta=metaCache.get(oldId);if(meta){metaCache.delete(oldId);metaCache.set(newId,meta);}if(ratingCache.has(oldId)){const v=ratingCache.get(oldId);ratingCache.delete(oldId);ratingCache.set(newId,v);}
   }
 
-  async function reopenRenamed(newId,wasPaused) {
+  async function reopenRenamed(newId,wasPaused,currentTime=0) {
     try { await api('/api/smart/rescan'); } catch {}
     const input=$('#searchInput'); if(!input){location.reload();return;}
     input.value=newId.split('/').pop()||newId; input.dispatchEvent(new Event('input',{bubbles:true}));
     const deadline=Date.now()+5000;
     const timer=setInterval(()=>{
       const card=[...document.querySelectorAll('.card[data-id]')].find(n=>n.dataset.id===newId);
-      if(card){clearInterval(timer);card.click();if(wasPaused)setTimeout(()=>$('#videoPlayer')?.pause(),700);}
-      else if(Date.now()>deadline){clearInterval(timer);location.reload();}
+      if(card){
+        clearInterval(timer);
+        const video=$('#videoPlayer');
+        if(video&&currentTime>0){
+          const restore=()=>{try{if(!Number.isFinite(video.duration)||currentTime<video.duration-1)video.currentTime=currentTime;}catch{}if(wasPaused)setTimeout(()=>video.pause(),80);};
+          video.addEventListener('loadedmetadata',restore,{once:true});
+        }
+        card.click();
+        if(wasPaused&&!currentTime)setTimeout(()=>$('#videoPlayer')?.pause(),700);
+      } else if(Date.now()>deadline){clearInterval(timer);location.reload();}
     },120);
   }
 
@@ -192,7 +200,7 @@
       video.pause();video.removeAttribute('src');video.load();
       try{
         const d=await manage({action:'rename',path,stem:nextStem});const moved=d.moved?.[0];if(!moved)throw new Error('改名失败');
-        migrateLocalKey(path,moved.new,time,duration);cancel();toast('已改名');await reopenRenamed(moved.new,wasPaused);
+        migrateLocalKey(path,moved.new,time,duration);cancel();toast('已改名');await reopenRenamed(moved.new,wasPaused,time);
       }catch(err){toast(err.message);input.disabled=false;}
       finally{renameBusy=false;}
     });
