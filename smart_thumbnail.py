@@ -24,6 +24,13 @@ _CACHE_MAX = 48
 _CACHE_TTL = 180.0
 _EXTRACTORS = threading.BoundedSemaphore(2)
 
+_HOVER_LOCK = threading.RLock()
+_HOVER_CACHE: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
+_HOVER_CACHE_MAX = 12
+_HOVER_CACHE_TTL = 45.0
+_HOVER_EXTRACTOR = threading.BoundedSemaphore(1)
+_HOVER_SEEKS = (6.0, 24.0)
+
 
 def _cache_get(key: str) -> bytes | None:
     now = time.monotonic()
@@ -45,6 +52,28 @@ def _cache_put(key: str, data: bytes) -> None:
         _CACHE.move_to_end(key)
         while len(_CACHE) > _CACHE_MAX:
             _CACHE.popitem(last=False)
+
+
+def _hover_cache_get(key: str) -> bytes | None:
+    now = time.monotonic()
+    with _HOVER_LOCK:
+        hit = _HOVER_CACHE.get(key)
+        if not hit:
+            return None
+        created, data = hit
+        if now - created > _HOVER_CACHE_TTL:
+            _HOVER_CACHE.pop(key, None)
+            return None
+        _HOVER_CACHE.move_to_end(key)
+        return data
+
+
+def _hover_cache_put(key: str, data: bytes) -> None:
+    with _HOVER_LOCK:
+        _HOVER_CACHE[key] = (time.monotonic(), data)
+        _HOVER_CACHE.move_to_end(key)
+        while len(_HOVER_CACHE) > _HOVER_CACHE_MAX:
+            _HOVER_CACHE.popitem(last=False)
 
 
 def _identity(path: Path, size: int) -> str:
@@ -93,13 +122,11 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
                 return None
 
             try:
-                # comtypes returns a sole [out] parameter as the Python return value.
-                # First do cache-only work; this mirrors Explorer and avoids decoding.
+                # First ask Explorer's shared cache only. This is the cheapest path.
                 hbitmap = factory.GetImage(SIZE(size, size), 0x08 | 0x10)
             except Exception:
                 try:
-                    # Cache miss: let the registered Shell provider extract/cache it
-                    # on this background worker rather than on the browser/UI thread.
+                    # Cache miss: allow the registered Shell provider to extract once.
                     hbitmap = factory.GetImage(SIZE(size, size), 0x08 | 0x01)
                 except Exception:
                     return None
@@ -190,18 +217,18 @@ def _ffmpeg_exe() -> str | None:
     return shutil.which("ffmpeg")
 
 
-def _ffmpeg_thumbnail(path: Path, size: int) -> bytes | None:
+def _ffmpeg_frame(path: Path, size: int, seek: float, timeout: int = 7) -> bytes | None:
     exe = _ffmpeg_exe()
     if not exe:
         return None
     command = [
         exe, "-hide_banner", "-loglevel", "error", "-nostdin",
-        "-ss", "1.0", "-noaccurate_seek", "-i", str(path),
+        "-ss", f"{max(0.0, seek):.3f}", "-noaccurate_seek", "-i", str(path),
         "-an", "-sn", "-dn", "-frames:v", "1",
         "-vf", f"scale='min({size},iw)':-2",
         "-q:v", "8", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
     ]
-    kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8, check=False)
+    kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=False)
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
@@ -210,6 +237,14 @@ def _ffmpeg_thumbnail(path: Path, size: int) -> bytes | None:
         return data if result.returncode == 0 and len(data) > 300 else None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _ffmpeg_thumbnail(path: Path, size: int) -> bytes | None:
+    data = _ffmpeg_frame(path, size, 1.0, timeout=8)
+    if data is None:
+        # Some very short / odd containers cannot seek to one second.
+        data = _ffmpeg_frame(path, size, 0.0, timeout=8)
+    return data
 
 
 def get_thumbnail(path: Path, size: int = 360) -> bytes | None:
@@ -234,6 +269,37 @@ def get_thumbnail(path: Path, size: int = 360) -> bytes | None:
         return data
 
 
+def get_hover_frame(path: Path, slot: int = 0, size: int = 360) -> bytes | None:
+    """Return one just-in-time video frame without attaching the video stream.
+
+    Only one hover extraction is allowed globally. Two fixed input-side seek points
+    keep I/O bounded and avoid decoding through the full video.
+    """
+    slot = 0 if slot <= 0 else 1
+    try:
+        identity = _identity(path, size)
+    except OSError:
+        return None
+    key = f"{identity}\nhover:{slot}"
+    hit = _hover_cache_get(key)
+    if hit is not None:
+        return hit
+    with _HOVER_EXTRACTOR:
+        hit = _hover_cache_get(key)
+        if hit is not None:
+            return hit
+        data = _ffmpeg_frame(path, size, _HOVER_SEEKS[slot], timeout=6)
+        if data:
+            _hover_cache_put(key, data)
+        return data
+
+
+def ffmpeg_available() -> bool:
+    return bool(_ffmpeg_exe())
+
+
 def clear_memory_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+    with _HOVER_LOCK:
+        _HOVER_CACHE.clear()
