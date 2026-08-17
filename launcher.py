@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -128,12 +129,7 @@ def clear_runtime(root: Path) -> None:
 
 
 def cleanup_compat_cache(root: Path) -> None:
-    """Clean LocalHub's temporary compatibility files without assuming one API name.
-
-    This deliberately supports both the current compat_support.cleanup_root() and
-    the older cleanup_compat_dir() name so a helper rename can never prevent the
-    application itself from starting again.
-    """
+    """Clean compatibility files without assuming one compat_support API name."""
     try:
         import compat_support
 
@@ -150,6 +146,39 @@ def cleanup_compat_cache(root: Path) -> None:
         shutil.rmtree(root / ".localhub" / "compat", ignore_errors=True)
     except OSError:
         pass
+
+
+def self_test() -> int:
+    """Exercise packaged startup dependencies without opening UI or a server."""
+    try:
+        import server
+        import smart_mode  # noqa: F401
+        import catalog_cache  # noqa: F401
+        import preview_support  # noqa: F401
+        import compat_support
+        import rating_support  # noqa: F401
+
+        if not callable(getattr(compat_support, "install", None)):
+            return 11
+        if not any(callable(getattr(compat_support, name, None)) for name in ("cleanup_root", "cleanup_compat_dir")):
+            return 12
+
+        app_dir = Path(server.APP_DIR)
+        for name in ("smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js", "move_branding.js"):
+            if not (app_dir / name).exists():
+                return 20
+
+        with tempfile.TemporaryDirectory(prefix="localhub-selftest-") as tmp:
+            root = Path(tmp)
+            compat = root / ".localhub" / "compat"
+            compat.mkdir(parents=True)
+            (compat / "probe.tmp").write_bytes(b"ok")
+            cleanup_compat_cache(root)
+            if compat.exists():
+                return 30
+        return 0
+    except Exception:
+        return 99
 
 
 def create_tray_image():
@@ -222,12 +251,7 @@ def main() -> int:
         server.STATIC_FILES["/ux_enhancements.css"] = app_dir / "ux_enhancements.css"
         server.STATIC_FILES["/move_branding.js"] = app_dir / "move_branding.js"
 
-        # Personal ratings are metadata only. Install before the snapshot layer
-        # so ratings are included in the lightweight catalog representation.
         rating_support.install(server, smart_mode)
-
-        # LocalHub boots from a compact metadata snapshot when available, then
-        # refreshes the real filesystem index in the background.
         catalog_cache.cleanup_legacy_thumbnail_cache(root)
         catalog_cache.install(smart_mode)
         smart_mode.install(server)
@@ -274,4 +298,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        raise SystemExit(self_test())
     raise SystemExit(main())
