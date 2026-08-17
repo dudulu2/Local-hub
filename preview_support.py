@@ -6,6 +6,8 @@ from http import HTTPStatus
 
 import smart_thumbnail
 
+HOVER_SLOTS = 6
+
 
 def install(server_module) -> None:
     """Add low-cost preview endpoints after smart_mode has installed its handler."""
@@ -26,6 +28,7 @@ def install(server_module) -> None:
                         slot = int(query.get("slot", ["0"])[0] or 0)
                     except ValueError:
                         slot = 0
+                    slot = max(0, min(HOVER_SLOTS - 1, slot))
                     try:
                         media = store.resolve_media(relative)
                     except (ValueError, FileNotFoundError):
@@ -36,20 +39,22 @@ def install(server_module) -> None:
                         return
                     data = smart_thumbnail.get_hover_frame(media, slot=slot, size=360)
                     if not data:
-                        self.send_error(HTTPStatus.NO_CONTENT)
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
                         return
                     self._headers(
                         HTTPStatus.OK,
                         "image/jpeg",
                         len(data),
-                        {"Cache-Control": "no-store", "X-LocalHub-Preview": f"hover-{0 if slot <= 0 else 1}"},
+                        {"Cache-Control": "no-store", "X-LocalHub-Preview": f"hover-{slot}"},
                     )
                     self.wfile.write(data)
                     return
 
                 if parsed.path == "/api/smart/preview-status":
                     raw = json.dumps(
-                        {"ok": True, "ffmpeg": smart_thumbnail.ffmpeg_available(), "hoverWorkers": 1},
+                        {"ok": True, "ffmpeg": smart_thumbnail.ffmpeg_available(), "hoverWorkers": 1, "hoverSlots": HOVER_SLOTS},
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ).encode("utf-8")
