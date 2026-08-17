@@ -1,0 +1,65 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'launcher.py'
+      - 'server.py'
+      - 'index.html'
+      - 'styles.css'
+      - 'app.js'
+      - 'LocalHub.spec'
+      - 'version_info.txt'
+      - 'tools/**'
+      - '.github/workflows/build-windows.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pystray pillow
+
+      - name: Generate application icon
+        run: python tools/make_icon.py
+
+      - name: Build one-file executable
+        run: pyinstaller --noconfirm --clean LocalHub.spec
+
+      - name: Generate SHA256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash .\dist\LocalHub.exe -Algorithm SHA256).Hash.ToLower()
+          "LocalHub.exe  $hash" | Set-Content .\dist\SHA256.txt -Encoding utf8
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalHub-Windows-x64
+          path: |
+            dist/LocalHub.exe
+            dist/SHA256.txt
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub ${{ github.ref_name }}" --generate-notes
