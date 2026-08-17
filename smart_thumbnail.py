@@ -18,7 +18,6 @@ except Exception:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff"}
 
-# Session-only LRU. It is deliberately small and vanishes when LocalHub exits.
 _CACHE_LOCK = threading.RLock()
 _CACHE: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
 _CACHE_MAX = 48
@@ -59,7 +58,7 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
         return None
     try:
         import ctypes
-        from ctypes import POINTER, Structure, byref, c_int, c_void_p
+        from ctypes import POINTER, Structure, byref, c_int, c_long, c_void_p
         from ctypes import wintypes
         from comtypes import COMMETHOD, GUID, HRESULT, IUnknown
 
@@ -81,22 +80,30 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
         ole32 = ctypes.windll.ole32
         gdi32 = ctypes.windll.gdi32
         user32 = ctypes.windll.user32
+        create_item = shell32.SHCreateItemFromParsingName
+        create_item.argtypes = [wintypes.LPCWSTR, c_void_p, POINTER(GUID), POINTER(POINTER(IShellItemImageFactory))]
+        create_item.restype = c_long
+
         ole32.CoInitialize(None)
         try:
             factory = POINTER(IShellItemImageFactory)()
             iid = IShellItemImageFactory._iid_
-            hr = shell32.SHCreateItemFromParsingName(str(path), None, byref(iid), byref(factory))
+            hr = create_item(str(path), None, byref(iid), byref(factory))
             if hr != 0 or not factory:
                 return None
 
-            hbitmap = wintypes.HBITMAP()
-            # THUMBNAILONLY | INCACHEONLY first: use Explorer's existing cache.
-            hr = factory.GetImage(SIZE(size, size), 0x08 | 0x10, byref(hbitmap))
-            if hr != 0 or not hbitmap:
-                # Background extraction path. Shell chooses the registered provider
-                # and stores the result in its global cache for other apps too.
-                hr = factory.GetImage(SIZE(size, size), 0x08 | 0x01, byref(hbitmap))
-            if hr != 0 or not hbitmap:
+            try:
+                # comtypes returns a sole [out] parameter as the Python return value.
+                # First do cache-only work; this mirrors Explorer and avoids decoding.
+                hbitmap = factory.GetImage(SIZE(size, size), 0x08 | 0x10)
+            except Exception:
+                try:
+                    # Cache miss: let the registered Shell provider extract/cache it
+                    # on this background worker rather than on the browser/UI thread.
+                    hbitmap = factory.GetImage(SIZE(size, size), 0x08 | 0x01)
+                except Exception:
+                    return None
+            if not hbitmap:
                 return None
 
             class BITMAP(Structure):
