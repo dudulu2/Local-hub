@@ -13,10 +13,11 @@
       <span class="brand-local">LOCAL</span><span class="brand-hub">HUB</span>
     </div>
     <div class="search-wrap">
-      <input id="searchInput" type="search" placeholder="搜索文件名或文件夹…" autocomplete="off" />
+      <input id="searchInput" type="search" placeholder="搜索文件名、文件夹或标签…" autocomplete="off" />
       <button id="clearSearch" class="icon-btn" title="清空搜索" aria-label="清空搜索">×</button>
     </div>
     <div class="top-actions">
+      <button id="organizeBtn" class="ghost-btn organize-toggle">整理</button>
       <button id="rescanBtn" class="ghost-btn">重新扫描</button>
       <button id="settingsBtn" class="ghost-btn">视图</button>
     </div>
@@ -31,11 +32,20 @@
         <button class="nav-item" data-filter="favorite"><span>★</span>收藏</button>
         <button class="nav-item" data-filter="continue"><span>↺</span>继续观看</button>
       </nav>
-      <section class="folder-section">
+
+      <section class="tag-section sidebar-section">
+        <div class="section-heading-row">
+          <div class="section-heading">标签</div>
+          <button id="clearTagFilter" class="micro-btn hidden" title="清除标签筛选">清除</button>
+        </div>
+        <div id="tagList" class="tag-list"></div>
+      </section>
+
+      <section class="folder-section sidebar-section">
         <div class="section-heading">文件夹</div>
         <div id="folderList" class="folder-list"></div>
       </section>
-      <div class="privacy-note">仅本机读取 · 不上传任何媒体</div>
+      <div class="privacy-note">仅本机读取 · 整理操作直接作用于本地文件</div>
     </aside>
 
     <main class="content">
@@ -56,6 +66,8 @@
         </div>
       </section>
 
+      <div id="activeFilterBar" class="active-filter-bar hidden"></div>
+
       <section id="continueSection" class="continue-section hidden">
         <div class="section-title-row"><h2>继续观看</h2><span id="continueCount"></span></div>
         <div id="continueRail" class="continue-rail"></div>
@@ -67,30 +79,125 @@
         <div id="emptyState" class="empty-state hidden">
           <div class="empty-icon">◌</div>
           <h3>没有找到媒体</h3>
-          <p>尝试清空搜索、切换分类或重新扫描目录。</p>
+          <p>尝试清空搜索、标签筛选、分类或重新扫描目录。</p>
         </div>
       </section>
     </main>
   </div>
 
   <dialog id="viewer" class="viewer">
-    <button id="closeViewer" class="viewer-close" aria-label="关闭">×</button>
-    <button id="prevBtn" class="viewer-nav viewer-prev" aria-label="上一个">‹</button>
-    <button id="nextBtn" class="viewer-nav viewer-next" aria-label="下一个">›</button>
-    <div class="viewer-stage">
-      <video id="videoPlayer" class="viewer-media hidden" controls preload="metadata" playsinline></video>
-      <img id="imageViewer" class="viewer-media hidden" alt="" />
-    </div>
-    <div class="viewer-meta">
-      <div class="viewer-title-row">
-        <div>
-          <h2 id="viewerTitle"></h2>
-          <p id="viewerPath"></p>
+    <div class="viewer-layout">
+      <div class="viewer-main">
+        <button id="closeViewer" class="viewer-close" aria-label="关闭">×</button>
+        <button id="prevBtn" class="viewer-nav viewer-prev" aria-label="上一个">‹</button>
+        <button id="nextBtn" class="viewer-nav viewer-next" aria-label="下一个">›</button>
+        <div class="viewer-stage">
+          <video id="videoPlayer" class="viewer-media hidden" controls preload="metadata" playsinline></video>
+          <img id="imageViewer" class="viewer-media hidden" alt="" />
         </div>
-        <button id="favoriteBtn" class="favorite-btn">☆ 收藏</button>
+        <div class="viewer-meta">
+          <div class="viewer-title-row">
+            <div class="viewer-title-block">
+              <h2 id="viewerTitle"></h2>
+              <p id="viewerPath"></p>
+            </div>
+            <div class="viewer-actions">
+              <button id="manageBtn" class="manage-btn">整理 <kbd>E</kbd></button>
+              <button id="favoriteBtn" class="favorite-btn">☆ 收藏</button>
+            </div>
+          </div>
+          <div id="viewerTagStrip" class="viewer-tag-strip"></div>
+          <div id="viewerDetails" class="viewer-details"></div>
+        </div>
       </div>
-      <div id="viewerDetails" class="viewer-details"></div>
+
+      <aside id="manageDrawer" class="manage-drawer" aria-label="整理媒体">
+        <div class="drawer-head">
+          <div>
+            <strong>整理媒体</strong>
+            <span>播放不中断，修改会直接作用于本地文件</span>
+          </div>
+          <button id="closeManageBtn" class="drawer-close" aria-label="收起整理面板">×</button>
+        </div>
+
+        <div class="drawer-scroll">
+          <section class="manage-section">
+            <label class="manage-label">标签</label>
+            <div id="manageTags" class="editable-tags"></div>
+            <div class="tag-entry">
+              <input id="tagInput" type="text" maxlength="32" placeholder="输入标签，回车添加" autocomplete="off" />
+              <button id="addTagBtn" class="small-action">添加</button>
+            </div>
+            <div id="tagSuggestions" class="tag-suggestions"></div>
+            <button id="saveTagsBtn" class="primary-action">保存标签</button>
+            <p class="manage-hint">标签只保存在 <code>.localhub</code> 中，不改动视频文件本身。</p>
+          </section>
+
+          <section class="manage-section">
+            <label class="manage-label" for="renameInput">改名</label>
+            <div class="rename-row">
+              <input id="renameInput" type="text" maxlength="180" autocomplete="off" />
+              <span id="renameExt" class="extension-pill"></span>
+            </div>
+            <button id="renameBtn" class="secondary-action">应用新名称</button>
+            <p class="manage-hint">扩展名会自动保留，避免误改格式。</p>
+          </section>
+
+          <section class="manage-section">
+            <label class="manage-label" for="moveFolderInput">移动到文件夹</label>
+            <input id="moveFolderInput" type="text" list="folderOptions" placeholder="例如：人物/室内" autocomplete="off" />
+            <datalist id="folderOptions"></datalist>
+            <div class="folder-shortcuts">
+              <button class="folder-chip" data-folder-shortcut="">根目录</button>
+              <div id="recentFolders"></div>
+            </div>
+            <button id="moveBtn" class="secondary-action">移动到这里</button>
+            <p class="manage-hint">可输入现有目录，也可输入新目录；不存在时会自动创建。</p>
+          </section>
+
+          <section class="manage-section manage-dangerless">
+            <div class="manage-label">快捷操作</div>
+            <div class="shortcut-list">
+              <span><kbd>E</kbd> 展开 / 收起整理</span>
+              <span><kbd>←</kbd><kbd>→</kbd> 上一个 / 下一个</span>
+              <span><kbd>Esc</kbd> 关闭查看器</span>
+            </div>
+          </section>
+        </div>
+      </aside>
     </div>
+  </dialog>
+
+  <div id="batchBar" class="batch-bar hidden">
+    <div class="batch-count"><strong id="selectedCount">0</strong> 项已选</div>
+    <button id="selectAllBtn" class="batch-button">全选当前结果</button>
+    <div class="batch-spacer"></div>
+    <button id="batchTagBtn" class="batch-button">＋ 添加标签</button>
+    <button id="batchMoveBtn" class="batch-button">⇢ 移动</button>
+    <button id="exitOrganizeBtn" class="batch-button muted">退出整理</button>
+  </div>
+
+  <dialog id="batchDialog" class="batch-dialog">
+    <form method="dialog" class="batch-card" onsubmit="return false">
+      <div class="batch-dialog-head">
+        <div>
+          <h3 id="batchDialogTitle">批量整理</h3>
+          <p id="batchDialogHint"></p>
+        </div>
+        <button id="closeBatchDialog" class="drawer-close" type="button">×</button>
+      </div>
+      <div id="batchTagForm" class="batch-form hidden">
+        <label>要添加的标签</label>
+        <input id="batchTagInput" type="text" placeholder="多个标签用逗号分隔" autocomplete="off" />
+        <div id="batchTagSuggestions" class="tag-suggestions"></div>
+        <button id="applyBatchTag" class="primary-action" type="button">添加到已选媒体</button>
+      </div>
+      <div id="batchMoveForm" class="batch-form hidden">
+        <label>目标文件夹</label>
+        <input id="batchMoveInput" type="text" list="folderOptions" placeholder="例如：待整理/人物" autocomplete="off" />
+        <button id="applyBatchMove" class="primary-action" type="button">移动已选媒体</button>
+      </div>
+    </form>
   </dialog>
 
   <div id="toast" class="toast" role="status"></div>
