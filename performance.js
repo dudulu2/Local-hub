@@ -5,15 +5,21 @@
   // legacy card-video observer in app.js. Playback in the viewer is untouched.
   const NativeIntersectionObserver = window.IntersectionObserver;
   if (NativeIntersectionObserver) {
-    class LocalHubIntersectionObserver extends NativeIntersectionObserver {
-      observe(target) {
-        if (target instanceof Element && target.classList.contains('lazy-preview')) {
-          return;
-        }
-        return super.observe(target);
-      }
-    }
-    window.IntersectionObserver = LocalHubIntersectionObserver;
+    window.IntersectionObserver = function LocalHubIntersectionObserver(callback, options) {
+      const inner = new NativeIntersectionObserver(callback, options);
+      return {
+        observe(target) {
+          if (target instanceof Element && target.classList.contains('lazy-preview')) return;
+          inner.observe(target);
+        },
+        unobserve(target) { inner.unobserve(target); },
+        disconnect() { inner.disconnect(); },
+        takeRecords() { return inner.takeRecords(); },
+        get root() { return inner.root; },
+        get rootMargin() { return inner.rootMargin; },
+        get thresholds() { return inner.thresholds; },
+      };
+    };
   }
 
   const PAGE_SIZE = 60;
