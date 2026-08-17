@@ -8,8 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import catalog_cache
 import server
-from smart_mode import Catalog
+import smart_mode
+
+catalog_cache.install(smart_mode)
+Catalog = smart_mode.Catalog
 
 
 def touch(path: Path, size: int = 128) -> None:
@@ -20,16 +24,17 @@ def touch(path: Path, size: int = 128) -> None:
 def main() -> None:
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
-        # Root videos must be preferred on Home.
         for i in range(5):
             touch(root / f"root-{i:02}.mp4", 500 + i)
-        # Several folders give Home enough diversity to fill 13-15 slots.
         for folder in range(12):
             base = root / f"collection-{folder:02}"
             touch(base / f"video-{folder:02}.mp4", 800 + folder)
-            # Mixed folder: images should collapse into one pack card.
             for image in range(6):
                 touch(base / f"page_{image:03}.jpg", 1000 + image * 3)
+        # Even unrelated-looking images become a single book when a folder
+        # contains multiple stills: the folder is the user's collection boundary.
+        touch(root / "book-only" / "alpha.jpg", 200)
+        touch(root / "book-only" / "totally-different-name.png", 7000)
 
         store = server.MediaStore(root)
         catalog = Catalog(store)
@@ -46,9 +51,16 @@ def main() -> None:
         assert kinds.count("pack") == 1, kinds
         assert "image" not in kinds, kinds
 
+        book = catalog.list_view("folder", "book-only", limit=30)
+        assert [item["kind"] for item in book["items"]] == ["pack"], book["items"]
+        assert book["items"][0]["count"] == 2
+
         videos = catalog.list_view("videos", limit=30)
         assert videos["total"] == 17, videos["total"]
         assert len(videos["items"]) == 17
+
+        packs = catalog.list_view("packs", limit=60)
+        assert packs["total"] == 13, packs["total"]
 
         found = catalog.list_view("search", q="collection-03", limit=30)
         assert found["total"] >= 1
