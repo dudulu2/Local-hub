@@ -1,3 +1,4 @@
+# CI artifact verification for LocalHub 2.2
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(2, 2, 0, 0),
