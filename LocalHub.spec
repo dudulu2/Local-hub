@@ -1,17 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
+
+imageio_datas, imageio_binaries, imageio_hiddenimports = collect_all('imageio_ffmpeg')
 
 a = Analysis(
     ['launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=imageio_binaries,
     datas=[
         ('index.html', '.'),
         ('styles.css', '.'),
         ('app.js', '.'),
-    ],
-    hiddenimports=['pystray._win32'],
+        ('performance.js', '.'),
+    ] + imageio_datas,
+    hiddenimports=['pystray._win32'] + imageio_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
