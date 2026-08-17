@@ -97,6 +97,13 @@ jobs:
       - name: Build one-file executable
         run: pyinstaller --noconfirm --clean LocalHub.spec
 
+      - name: Execute packaged EXE self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\dist\LocalHub.exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub self-test failed with exit code $($p.ExitCode)" }
+          Write-Host "Packaged LocalHub self-test passed"
+
       - name: Generate SHA256
         shell: pwsh
         run: |
