@@ -186,6 +186,7 @@ def main() -> int:
         import server
         import smart_mode
         import catalog_cache
+        import preview_support
 
         # LocalHub 2 boots from a compact metadata snapshot when available, then
         # refreshes the real filesystem index in the background. No media bytes
@@ -193,6 +194,9 @@ def main() -> int:
         catalog_cache.cleanup_legacy_thumbnail_cache(root)
         catalog_cache.install(smart_mode)
         smart_mode.install(server)
+        # Adds a single-worker, delayed hover-frame endpoint without reintroducing
+        # browser <video> elements into the media grid.
+        preview_support.install(server)
 
         port = server.pick_port(HOST, PREFERRED_PORT)
         url = f"http://{HOST}:{port}/"
