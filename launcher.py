@@ -154,6 +154,11 @@ def run_tray(root: Path, url: str) -> None:
             smart_thumbnail.clear_memory_cache()
         except Exception:
             pass
+        try:
+            import compat_support
+            compat_support.cleanup_root(root)
+        except Exception:
+            pass
         icon.stop()
         os._exit(0)
 
@@ -187,16 +192,14 @@ def main() -> int:
         import smart_mode
         import catalog_cache
         import preview_support
+        import compat_support
 
-        # LocalHub 2 boots from a compact metadata snapshot when available, then
-        # refreshes the real filesystem index in the background. No media bytes
-        # are stored in this snapshot.
         catalog_cache.cleanup_legacy_thumbnail_cache(root)
+        compat_support.cleanup_root(root)
         catalog_cache.install(smart_mode)
         smart_mode.install(server)
-        # Adds a single-worker, delayed hover-frame endpoint without reintroducing
-        # browser <video> elements into the media grid.
         preview_support.install(server)
+        compat_support.install(server)
 
         port = server.pick_port(HOST, PREFERRED_PORT)
         url = f"http://{HOST}:{port}/"
@@ -232,6 +235,11 @@ def main() -> int:
         return 1
     finally:
         clear_runtime(root)
+        try:
+            import compat_support
+            compat_support.cleanup_root(root)
+        except Exception:
+            pass
         if mutex_handle and os.name == "nt":
             ctypes.windll.kernel32.CloseHandle(mutex_handle)
 
