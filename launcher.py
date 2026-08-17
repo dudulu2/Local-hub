@@ -156,7 +156,7 @@ def run_tray(root: Path, url: str) -> None:
             pass
         try:
             import compat_support
-            compat_support.cleanup_root(root)
+            compat_support.cleanup_compat_dir(root)
         except Exception:
             pass
         icon.stop()
@@ -193,13 +193,24 @@ def main() -> int:
         import catalog_cache
         import preview_support
         import compat_support
+        import rating_support
 
+        app_dir = Path(server.APP_DIR)
+        server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
+        server.STATIC_FILES["/ux_enhancements.css"] = app_dir / "ux_enhancements.css"
+
+        # Personal ratings are metadata only. Install before the snapshot layer
+        # so ratings are included in the lightweight catalog representation.
+        rating_support.install(server, smart_mode)
+
+        # LocalHub boots from a compact metadata snapshot when available, then
+        # refreshes the real filesystem index in the background.
         catalog_cache.cleanup_legacy_thumbnail_cache(root)
-        compat_support.cleanup_root(root)
         catalog_cache.install(smart_mode)
         smart_mode.install(server)
         preview_support.install(server)
         compat_support.install(server)
+        compat_support.cleanup_compat_dir(root)
 
         port = server.pick_port(HOST, PREFERRED_PORT)
         url = f"http://{HOST}:{port}/"
@@ -235,11 +246,6 @@ def main() -> int:
         return 1
     finally:
         clear_runtime(root)
-        try:
-            import compat_support
-            compat_support.cleanup_root(root)
-        except Exception:
-            pass
         if mutex_handle and os.name == "nt":
             ctypes.windll.kernel32.CloseHandle(mutex_handle)
 
