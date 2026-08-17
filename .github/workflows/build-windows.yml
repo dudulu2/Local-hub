@@ -23,6 +23,9 @@ on:
       - 'move_branding.js'
       - 'LocalHub.spec'
       - 'version_info.txt'
+      - 'VERSION'
+      - 'README.md'
+      - 'RELEASE_NOTES.md'
       - 'tools/**'
       - '.github/workflows/build-windows.yml'
   pull_request:
@@ -45,6 +48,9 @@ on:
       - 'move_branding.js'
       - 'LocalHub.spec'
       - 'version_info.txt'
+      - 'VERSION'
+      - 'README.md'
+      - 'RELEASE_NOTES.md'
       - 'tools/**'
       - '.github/workflows/build-windows.yml'
 
@@ -125,9 +131,32 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Publish stable release from main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content .\VERSION -Raw).Trim()
+          if (-not $version) { throw 'VERSION is empty' }
+          $tag = "v$version"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag .\dist\LocalHub.exe .\dist\SHA256.txt --clobber
+          } else {
+            gh release create $tag .\dist\LocalHub.exe .\dist\SHA256.txt --target "${{ github.sha }}" --title "LocalHub $version" --notes-file .\RELEASE_NOTES.md
+          }
+
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub ${{ github.ref_name }}" --generate-notes
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag .\dist\LocalHub.exe .\dist\SHA256.txt --clobber
+          } else {
+            gh release create $tag .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub $tag" --generate-notes
+          }
