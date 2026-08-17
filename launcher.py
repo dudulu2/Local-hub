@@ -180,6 +180,11 @@ def main() -> int:
 
     try:
         import server
+        import thumbnail_support
+
+        # Adds a lightweight JPEG thumbnail pipeline. Grid cards never need to
+        # attach the original video stream; only the full viewer does that.
+        thumbnail_support.install(server)
 
         port = server.pick_port(HOST, PREFERRED_PORT)
         url = f"http://{HOST}:{port}/"
