@@ -198,6 +198,7 @@ def main() -> int:
         app_dir = Path(server.APP_DIR)
         server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
         server.STATIC_FILES["/ux_enhancements.css"] = app_dir / "ux_enhancements.css"
+        server.STATIC_FILES["/move_branding.js"] = app_dir / "move_branding.js"
 
         # Personal ratings are metadata only. Install before the snapshot layer
         # so ratings are included in the lightweight catalog representation.
