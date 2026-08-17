@@ -20,6 +20,7 @@ on:
       - 'smart_ui.js'
       - 'ux_enhancements.css'
       - 'ux_enhancements.js'
+      - 'move_branding.js'
       - 'LocalHub.spec'
       - 'version_info.txt'
       - 'tools/**'
@@ -51,6 +52,7 @@ jobs:
         run: |
           node --check .\smart_ui.js
           node --check .\ux_enhancements.js
+          node --check .\move_branding.js
 
       - name: Smart catalog smoke test
         run: python tools/smoke_smart.py
