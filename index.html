@@ -419,8 +419,8 @@
       const observer = new MutationObserver(queueEnhance);
       const grid = document.querySelector('#mediaGrid');
       const rail = document.querySelector('#continueRail');
-      if(grid) observer.observe(grid,{childList:true,subtree:true});
-      if(rail) observer.observe(rail,{childList:true,subtree:true});
+      if(grid) observer.observe(grid,{childList:true});
+      if(rail) observer.observe(rail,{childList:true});
       queueEnhance();
     })();
   </script>
