@@ -1,5 +1,10 @@
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import launcher
 
@@ -18,12 +23,11 @@ class RootCompat:
 
 
 # The historical failure was an AttributeError when a cleanup helper was
-# renamed.  The launcher must tolerate a compat module with no known cleanup
+# renamed. The launcher must tolerate a compat module with no known cleanup
 # helper at all.
 with TemporaryDirectory() as tmp:
     root = Path(tmp)
 
-    # Simulate a completely missing helper without letting startup fail.
     original_import = __import__
     try:
         import builtins
@@ -38,7 +42,6 @@ with TemporaryDirectory() as tmp:
     finally:
         builtins.__import__ = original_import
 
-    # Verify the current cleanup_root API is accepted.
     try:
         import builtins
 
