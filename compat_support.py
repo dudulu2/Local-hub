@@ -235,6 +235,8 @@ def install(server_module) -> None:
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
                 query = urllib.parse.parse_qs(parsed.query)
+                if parsed.path == "/api/health":
+                    return self._send_json({"ok": True, "service": "LocalHub"})
                 if parsed.path == "/api/media/probe":
                     relative = query.get("path", [""])[0]
                     try:
