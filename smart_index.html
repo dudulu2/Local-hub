@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b0b0c">
+  <title>LocalHub</title>
+  <link rel="stylesheet" href="/smart_ui.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="brand" id="brandBtn"><b>LOCAL</b><strong>HUB</strong></button>
+    <div class="search"><input id="searchInput" type="search" placeholder="搜索文件名、文件夹或标签…" autocomplete="off"><button id="clearSearch">×</button></div>
+    <button class="top-btn" id="rescanBtn">重新扫描</button>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <nav class="main-nav">
+        <button data-route="home" class="active"><span>⌂</span>首页</button>
+        <button data-route="videos"><span>▶</span>全部视频</button>
+        <button data-route="packs"><span>▦</span>图包 / 图册</button>
+        <button data-route="root"><span>◫</span>根目录</button>
+        <button data-route="favorite"><span>★</span>收藏</button>
+        <button data-route="continue"><span>↺</span>继续观看</button>
+      </nav>
+      <div class="side-title">文件夹</div>
+      <div id="folderNav" class="folder-nav"><div class="side-loading">正在建立索引…</div></div>
+      <div class="side-foot">轻量索引 · 按需缩略图 · 本机运行</div>
+    </aside>
+
+    <main class="content">
+      <section class="heading">
+        <div><h1 id="pageTitle">首页</h1><p id="pageMeta">只展示少量内容，完整媒体库通过左侧分类进入。</p></div>
+        <div id="viewHint" class="view-hint"></div>
+      </section>
+      <section id="grid" class="grid"></section>
+      <div id="empty" class="empty hidden"><b>没有找到内容</b><span>换一个分类、文件夹或搜索词试试。</span></div>
+      <button id="loadMore" class="load-more hidden">加载更多</button>
+    </main>
+  </div>
+
+  <dialog id="viewer" class="viewer">
+    <button class="dialog-close" id="closeViewer">×</button>
+    <div class="viewer-stage"><video id="videoPlayer" controls playsinline preload="metadata"></video></div>
+    <div class="viewer-info">
+      <div class="viewer-copy"><h2 id="viewerTitle"></h2><p id="viewerPath"></p><div id="viewerTags" class="viewer-tags"></div></div>
+      <div class="viewer-actions"><button id="favoriteBtn">☆ 收藏</button><button id="manageBtn">整理</button></div>
+    </div>
+    <aside id="managePanel" class="manage-panel hidden">
+      <div><b>标签</b><input id="manageTags" placeholder="多个标签用逗号分隔"></div>
+      <button id="saveTags">保存标签</button>
+      <div><b>改名</b><input id="renameInput" placeholder="新文件名（不含扩展名）"></div>
+      <button id="renameBtn">应用新名称</button>
+      <div><b>移动到文件夹</b><input id="moveInput" placeholder="例如：收藏/人物"></div>
+      <button id="moveBtn">移动文件</button>
+    </aside>
+  </dialog>
+
+  <dialog id="reader" class="reader">
+    <button class="dialog-close" id="closeReader">×</button>
+    <button class="reader-nav prev" id="readerPrev">‹</button>
+    <div class="reader-stage"><img id="readerImage" alt=""></div>
+    <button class="reader-nav next" id="readerNext">›</button>
+    <footer><strong id="readerTitle"></strong><span id="readerCounter"></span></footer>
+  </dialog>
+
+  <dialog id="tagDialog" class="tag-dialog">
+    <form method="dialog" onsubmit="return false">
+      <header><strong>快速调整标签</strong><button id="closeTagDialog" type="button">×</button></header>
+      <p id="tagDialogName"></p>
+      <input id="tagDialogInput" placeholder="例如：人物, 室内, 收藏">
+      <div class="tag-dialog-actions"><button id="cancelTagDialog" type="button">取消</button><button id="saveTagDialog" class="primary" type="button">保存</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script src="/smart_ui.js"></script>
+</body>
+</html>
