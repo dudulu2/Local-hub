@@ -33,14 +33,15 @@ def main() -> None:
         video_path = root / "preview.mp4"
         command = [
             exe, "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-f", "lavfi", "-i", "testsrc=size=320x180:rate=2",
-            "-t", "8", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-y", str(video_path),
+            "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=6",
+            "-t", "18", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-y", str(video_path),
         ]
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=20, check=False)
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=25, check=False)
         assert result.returncode == 0 and video_path.exists(), result.stderr.decode("utf-8", "replace")
         assert smart_thumbnail.ffmpeg_available(), "ffmpeg_available() is false"
         assert_jpeg(smart_thumbnail.get_thumbnail(video_path, 360), "video thumbnail")
-        assert_jpeg(smart_thumbnail.get_hover_frame(video_path, 0, 360), "hover frame")
+        for slot in range(6):
+            assert_jpeg(smart_thumbnail.get_hover_frame(video_path, slot, 360), f"hover frame {slot}")
 
     print("preview extraction smoke test passed")
 
