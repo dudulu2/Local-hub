@@ -40,6 +40,7 @@
       .perf-load-more{grid-column:1/-1;min-height:46px;display:flex;align-items:center;justify-content:center;color:#6f6f77;font-size:11px;border-top:1px solid #202024;margin-top:4px;padding-top:14px}
       .perf-load-more button{border:1px solid #333338;background:#171719;color:#bcbcc3;border-radius:9px;padding:8px 14px;cursor:pointer;font-weight:700}
       .perf-load-more button:hover{border-color:#505057;background:#202024;color:#fff}
+      .perf-load-more.done{opacity:.65}.perf-load-more.done button{cursor:default;border-color:transparent;background:transparent;color:#66666d}
       .perf-status{position:fixed;right:18px;bottom:18px;z-index:80;padding:7px 10px;border-radius:8px;border:1px solid #303035;background:rgba(20,20,22,.92);color:#8f8f97;font-size:10px;pointer-events:none;opacity:0;transform:translateY(8px);transition:.18s}
       .perf-status.show{opacity:1;transform:translateY(0)}
       @media(max-width:620px){.perf-status{right:10px;bottom:68px}.perf-load-more{min-height:40px}}
@@ -165,13 +166,13 @@
     const fragment = document.createDocumentFragment();
     batch.forEach((card) => fragment.appendChild(card));
     grid.insertBefore(fragment, gridSentinel);
+    const button = gridSentinel.querySelector('button');
     if (!gridStash.length) {
       gridObserver?.unobserve(gridSentinel);
-      gridSentinel.remove();
-      gridSentinel = null;
-    } else {
-      const button = gridSentinel.querySelector('button');
-      if (button) button.textContent = `继续加载 · 剩余 ${gridStash.length}`;
+      gridSentinel.classList.add('done');
+      if (button) button.textContent = '全部已加载';
+    } else if (button) {
+      button.textContent = `继续加载 · 剩余 ${gridStash.length}`;
     }
   }
 
