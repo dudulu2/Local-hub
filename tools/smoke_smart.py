@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,8 +32,6 @@ def main() -> None:
             touch(base / f"video-{folder:02}.mp4", 800 + folder)
             for image in range(6):
                 touch(base / f"page_{image:03}.jpg", 1000 + image * 3)
-        # Even unrelated-looking images become a single book when a folder
-        # contains multiple stills: the folder is the user's collection boundary.
         touch(root / "book-only" / "alpha.jpg", 200)
         touch(root / "book-only" / "totally-different-name.png", 7000)
 
@@ -64,6 +63,13 @@ def main() -> None:
 
         found = catalog.list_view("search", q="collection-03", limit=30)
         assert found["total"] >= 1
+
+        # Snapshot saving is intentionally background work in the product. Wait
+        # here only so Windows can remove TemporaryDirectory cleanly.
+        deadline = time.monotonic() + 5
+        while catalog.building and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not catalog.building, "catalog snapshot writer did not finish"
 
         print("smart catalog smoke test passed")
 
