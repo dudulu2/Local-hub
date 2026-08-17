@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#101010" />
+  <title>LocalHub - 本地媒体库</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" aria-label="LocalHub">
+      <span class="brand-local">LOCAL</span><span class="brand-hub">HUB</span>
+    </div>
+    <div class="search-wrap">
+      <input id="searchInput" type="search" placeholder="搜索文件名或文件夹…" autocomplete="off" />
+      <button id="clearSearch" class="icon-btn" title="清空搜索" aria-label="清空搜索">×</button>
+    </div>
+    <div class="top-actions">
+      <button id="rescanBtn" class="ghost-btn">重新扫描</button>
+      <button id="settingsBtn" class="ghost-btn">视图</button>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <nav class="side-nav">
+        <button class="nav-item active" data-filter="all"><span>◼</span>全部媒体</button>
+        <button class="nav-item" data-filter="video"><span>▶</span>视频</button>
+        <button class="nav-item" data-filter="image"><span>▣</span>图片</button>
+        <button class="nav-item" data-filter="favorite"><span>★</span>收藏</button>
+        <button class="nav-item" data-filter="continue"><span>↺</span>继续观看</button>
+      </nav>
+      <section class="folder-section">
+        <div class="section-heading">文件夹</div>
+        <div id="folderList" class="folder-list"></div>
+      </section>
+      <div class="privacy-note">仅本机读取 · 不上传任何媒体</div>
+    </aside>
+
+    <main class="content">
+      <section class="hero-row">
+        <div>
+          <h1 id="pageTitle">全部媒体</h1>
+          <p id="summaryText">正在扫描媒体…</p>
+        </div>
+        <div class="toolbar">
+          <select id="sortSelect" aria-label="排序">
+            <option value="modified-desc">最近修改</option>
+            <option value="name-asc">名称 A-Z</option>
+            <option value="name-desc">名称 Z-A</option>
+            <option value="size-desc">文件最大</option>
+            <option value="size-asc">文件最小</option>
+          </select>
+          <button id="densityBtn" class="ghost-btn compact">紧凑</button>
+        </div>
+      </section>
+
+      <section id="continueSection" class="continue-section hidden">
+        <div class="section-title-row"><h2>继续观看</h2><span id="continueCount"></span></div>
+        <div id="continueRail" class="continue-rail"></div>
+      </section>
+
+      <section>
+        <div class="section-title-row"><h2 id="gridTitle">媒体</h2><span id="resultCount"></span></div>
+        <div id="mediaGrid" class="media-grid" aria-live="polite"></div>
+        <div id="emptyState" class="empty-state hidden">
+          <div class="empty-icon">◌</div>
+          <h3>没有找到媒体</h3>
+          <p>尝试清空搜索、切换分类或重新扫描目录。</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="viewer" class="viewer">
+    <button id="closeViewer" class="viewer-close" aria-label="关闭">×</button>
+    <button id="prevBtn" class="viewer-nav viewer-prev" aria-label="上一个">‹</button>
+    <button id="nextBtn" class="viewer-nav viewer-next" aria-label="下一个">›</button>
+    <div class="viewer-stage">
+      <video id="videoPlayer" class="viewer-media hidden" controls preload="metadata" playsinline></video>
+      <img id="imageViewer" class="viewer-media hidden" alt="" />
+    </div>
+    <div class="viewer-meta">
+      <div class="viewer-title-row">
+        <div>
+          <h2 id="viewerTitle"></h2>
+          <p id="viewerPath"></p>
+        </div>
+        <button id="favoriteBtn" class="favorite-btn">☆ 收藏</button>
+      </div>
+      <div id="viewerDetails" class="viewer-details"></div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
