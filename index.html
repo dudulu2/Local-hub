@@ -6,6 +6,41 @@
   <meta name="theme-color" content="#101010" />
   <title>LocalHub - 本地媒体库</title>
   <link rel="stylesheet" href="/styles.css" />
+  <style id="inlineTagStripStyles">
+    /* Video-site style tag rail: always present, visually quiet, editable on demand. */
+    .media-card .card-tags{display:none!important}
+    .site-tag-strip{height:27px;margin-top:6px;padding:3px 4px 3px 5px;display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;border-top:1px solid #202024;border-bottom:1px solid #171719;background:rgba(20,20,22,.55);border-radius:6px;cursor:default}
+    .site-tag-list{display:flex;align-items:center;gap:2px;min-width:0;flex:1;overflow:hidden;white-space:nowrap}
+    .site-tag-chip,.site-tag-more{flex:0 1 auto;min-width:0;max-width:105px;border:0;background:transparent;color:#a8a8b0;border-radius:4px;padding:2px 4px;font-size:10px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;transition:.15s}
+    .site-tag-chip::before{content:'#';color:#686870;margin-right:1px}
+    .site-tag-chip:hover,.site-tag-more:hover{background:#252529;color:#ededf0}
+    .site-tag-chip:hover::before{color:var(--accent)}
+    .site-tag-more{flex:0 0 auto;color:#6f6f77;max-width:none}
+    .site-tag-empty{font-size:10px;color:#55555d;padding-left:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .site-tag-edit{flex:0 0 auto;width:24px;height:21px;border:0;border-radius:5px;background:transparent;color:#67676f;display:grid;place-items:center;cursor:pointer;font-size:14px;line-height:1;opacity:.42;transition:.15s}
+    .media-card:hover .site-tag-edit{opacity:1;color:#a9a9b0}
+    .site-tag-edit:hover{background:#2a251d!important;color:var(--accent)!important}
+    .organize-card .site-tag-edit{display:none}
+    .media-grid.compact-grid .site-tag-strip{height:25px;margin-top:4px}
+    .media-grid.compact-grid .site-tag-chip:nth-of-type(n+3){display:none}
+
+    .inline-tag-popover{position:fixed;z-index:120;width:min(340px,calc(100vw - 20px));background:#171719;border:1px solid #39393f;border-radius:11px;box-shadow:0 18px 55px rgba(0,0,0,.58);padding:12px;color:#f4f4f5;animation:inlineTagIn .12s ease-out}
+    @keyframes inlineTagIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+    .inline-tag-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px}
+    .inline-tag-head strong{font-size:12px}.inline-tag-head span{font-size:9px;color:#686870;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .inline-tag-close{border:0;background:transparent;color:#777780;font-size:18px;cursor:pointer;width:24px;height:24px;border-radius:5px}.inline-tag-close:hover{background:#26262a;color:#fff}
+    .inline-tag-current{display:flex;flex-wrap:wrap;gap:5px;min-height:25px;margin-bottom:9px}
+    .inline-tag-current .inline-tag-token{display:inline-flex;align-items:center;gap:4px;border:1px solid #3b3328;background:#211d17;color:#d8b785;border-radius:999px;padding:4px 7px;font-size:10px}
+    .inline-tag-token button{border:0;background:transparent;color:#8f7c60;padding:0;cursor:pointer;line-height:1}.inline-tag-token button:hover{color:#fff}
+    .inline-tag-no-tags{font-size:10px;color:#606068;padding:5px 2px}
+    .inline-tag-entry{display:flex;gap:6px}.inline-tag-entry input{flex:1;min-width:0;border:1px solid #35353a;background:#101012;color:#fff;border-radius:7px;padding:8px 9px;font-size:11px;outline:none}.inline-tag-entry input:focus{border-color:#765729;box-shadow:0 0 0 3px rgba(255,151,0,.06)}
+    .inline-tag-add{border:1px solid #3a3a40;background:#27272b;color:#ddd;border-radius:7px;padding:0 10px;font-size:11px;font-weight:750;cursor:pointer}.inline-tag-add:hover{border-color:#5d4524;color:#ffc06a}
+    .inline-tag-suggestions{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px;max-height:52px;overflow:hidden}
+    .inline-tag-suggest{border:0;background:#202023;color:#818189;border-radius:999px;padding:3px 7px;font-size:9px;cursor:pointer}.inline-tag-suggest:hover{background:#2a251d;color:#e0b471}
+    .inline-tag-foot{display:flex;align-items:center;gap:6px;margin-top:10px;padding-top:9px;border-top:1px solid #29292d}
+    .inline-tag-note{font-size:9px;color:#5e5e66;margin-right:auto}.inline-tag-cancel,.inline-tag-save{border:0;border-radius:7px;padding:7px 10px;font-size:10px;font-weight:800;cursor:pointer}.inline-tag-cancel{background:#252529;color:#aaaab1}.inline-tag-save{background:var(--accent);color:#111}.inline-tag-save:disabled{opacity:.45;cursor:not-allowed}
+    @media(max-width:620px){.site-tag-chip{max-width:82px}.site-tag-chip:nth-of-type(n+3){display:none}.inline-tag-popover{left:10px!important;right:10px!important;width:auto!important}}
+  </style>
 </head>
 <body>
   <header class="topbar">
@@ -202,5 +237,192 @@
 
   <div id="toast" class="toast" role="status"></div>
   <script src="/app.js"></script>
+  <script>
+    (() => {
+      let editor = null;
+      let editingId = '';
+      let draft = [];
+      let anchorButton = null;
+      let enhanceQueued = false;
+
+      const mediaById = id => state.items.find(item => item.id === id);
+      const cleanTag = value => String(value || '').trim().replace(/^#+/, '').slice(0, 32);
+      const uniqueTags = values => [...new Set(values.map(cleanTag).filter(Boolean))].slice(0, 32);
+
+      function queueEnhance(){
+        if(enhanceQueued) return;
+        enhanceQueued = true;
+        requestAnimationFrame(() => { enhanceQueued = false; enhanceAll(); });
+      }
+
+      function stripMarkup(item){
+        const tags = item.tags || [];
+        const visible = tags.slice(0, 4);
+        const rest = Math.max(0, tags.length - visible.length);
+        const tagHtml = visible.map(tag => `<button class="site-tag-chip" data-card-tag="${escapeHtml(tag)}" data-inline-filter-tag="${escapeHtml(tag)}" title="筛选 #${escapeHtml(tag)}">${escapeHtml(tag)}</button>`).join('');
+        const more = rest ? `<button class="site-tag-more" data-card-tag="" data-inline-edit-tags="${escapeHtml(item.id)}" title="查看并编辑全部标签">+${rest}</button>` : '';
+        const empty = tags.length ? '' : '<span class="site-tag-empty">暂无标签</span>';
+        return `<div class="site-tag-list">${tagHtml}${more}${empty}</div><button class="site-tag-edit" data-card-tag="" data-inline-edit-tags="${escapeHtml(item.id)}" title="调整标签" aria-label="调整标签">＋</button>`;
+      }
+
+      function enhanceCard(card){
+        const item = mediaById(card.dataset.id);
+        if(!item || item.type !== 'video') return;
+        card.querySelector('.card-tags')?.remove();
+        let strip = card.querySelector('.site-tag-strip');
+        if(!strip){
+          strip = document.createElement('div');
+          strip.className = 'site-tag-strip';
+          const title = card.querySelector('.card-title');
+          const meta = card.querySelector('.card-meta');
+          if(title) title.insertAdjacentElement('afterend', strip);
+          else if(meta) meta.insertAdjacentElement('beforebegin', strip);
+          else card.appendChild(strip);
+        }
+        strip.innerHTML = stripMarkup(item);
+      }
+
+      function enhanceAll(){
+        document.querySelectorAll('#mediaGrid .media-card, #continueRail .media-card').forEach(enhanceCard);
+      }
+
+      function ensureEditor(){
+        if(editor) return editor;
+        editor = document.createElement('div');
+        editor.className = 'inline-tag-popover hidden';
+        editor.setAttribute('role','dialog');
+        editor.setAttribute('aria-label','快速调整标签');
+        document.body.appendChild(editor);
+
+        editor.addEventListener('click', event => {
+          event.stopPropagation();
+          const remove = event.target.closest('[data-inline-remove-tag]');
+          if(remove){ draft = draft.filter(tag => tag !== remove.dataset.inlineRemoveTag); renderEditor(); return; }
+          const suggest = event.target.closest('[data-inline-suggest-tag]');
+          if(suggest){ draft = uniqueTags([...draft, suggest.dataset.inlineSuggestTag]); renderEditor(); return; }
+          if(event.target.closest('[data-inline-add-tag]')){ addInputTags(); return; }
+          if(event.target.closest('[data-inline-cancel-tags],[data-inline-close-tags]')){ closeEditor(); return; }
+          if(event.target.closest('[data-inline-save-tags]')) saveInlineTags();
+        });
+        editor.addEventListener('keydown', event => {
+          if(event.target.matches('[data-inline-tag-input]') && event.key === 'Enter'){
+            event.preventDefault(); addInputTags();
+          }
+          if((event.ctrlKey || event.metaKey) && event.key === 'Enter'){
+            event.preventDefault(); saveInlineTags();
+          }
+          if(event.key === 'Escape'){ event.preventDefault(); closeEditor(); }
+        });
+        return editor;
+      }
+
+      function renderEditor(){
+        const item = mediaById(editingId);
+        if(!item){ closeEditor(); return; }
+        const tokens = draft.length
+          ? draft.map(tag => `<span class="inline-tag-token">#${escapeHtml(tag)}<button data-inline-remove-tag="${escapeHtml(tag)}" title="移除">×</button></span>`).join('')
+          : '<span class="inline-tag-no-tags">还没有标签，下面直接添加</span>';
+        const suggestions = (state.tagStats || []).map(entry => entry.name).filter(tag => !draft.includes(tag)).slice(0, 9)
+          .map(tag => `<button class="inline-tag-suggest" data-inline-suggest-tag="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`).join('');
+        editor.innerHTML = `
+          <div class="inline-tag-head"><div><strong>调整标签</strong><span>${escapeHtml(item.name)}</span></div><button class="inline-tag-close" data-inline-close-tags>×</button></div>
+          <div class="inline-tag-current">${tokens}</div>
+          <div class="inline-tag-entry"><input data-inline-tag-input maxlength="80" placeholder="输入标签；逗号可一次加多个" autocomplete="off"><button class="inline-tag-add" data-inline-add-tag>添加</button></div>
+          ${suggestions ? `<div class="inline-tag-suggestions">${suggestions}</div>` : ''}
+          <div class="inline-tag-foot"><span class="inline-tag-note">Enter 添加 · Ctrl+Enter 保存</span><button class="inline-tag-cancel" data-inline-cancel-tags>取消</button><button class="inline-tag-save" data-inline-save-tags>保存</button></div>`;
+        requestAnimationFrame(positionEditor);
+      }
+
+      function addInputTags(){
+        const input = editor?.querySelector('[data-inline-tag-input]');
+        if(!input) return;
+        const incoming = input.value.split(/[,，;；]+/).map(cleanTag).filter(Boolean);
+        if(!incoming.length) return;
+        draft = uniqueTags([...draft, ...incoming]);
+        renderEditor();
+        requestAnimationFrame(() => editor?.querySelector('[data-inline-tag-input]')?.focus());
+      }
+
+      function positionEditor(){
+        if(!editor || editor.classList.contains('hidden') || !anchorButton) return;
+        if(window.innerWidth <= 620){ editor.style.left = '10px'; editor.style.top = `${Math.max(10, Math.min(window.innerHeight - editor.offsetHeight - 10, anchorButton.getBoundingClientRect().bottom + 7))}px`; return; }
+        const rect = anchorButton.getBoundingClientRect();
+        const width = editor.offsetWidth || 340;
+        const height = editor.offsetHeight || 230;
+        let left = rect.right - width;
+        left = Math.max(10, Math.min(window.innerWidth - width - 10, left));
+        let top = rect.bottom + 7;
+        if(top + height > window.innerHeight - 10) top = Math.max(10, rect.top - height - 7);
+        editor.style.left = `${left}px`;
+        editor.style.top = `${top}px`;
+      }
+
+      function openEditor(button, id){
+        const item = mediaById(id);
+        if(!item) return;
+        editingId = id;
+        draft = [...(item.tags || [])];
+        anchorButton = button;
+        ensureEditor().classList.remove('hidden');
+        renderEditor();
+        requestAnimationFrame(() => editor.querySelector('[data-inline-tag-input]')?.focus());
+      }
+
+      function closeEditor(){
+        if(editor) editor.classList.add('hidden');
+        editingId = '';
+        draft = [];
+        anchorButton = null;
+      }
+
+      async function saveInlineTags(){
+        const item = mediaById(editingId);
+        if(!item) return;
+        const saveButton = editor.querySelector('[data-inline-save-tags]');
+        if(saveButton) saveButton.disabled = true;
+        try{
+          await apiManage({action:'set_tags', paths:[item.id], tags:draft, mode:'replace'});
+          item.tags = [...draft];
+          const currentViewer = currentItem();
+          if(currentViewer?.id === item.id) currentViewer.tags = [...draft];
+          closeEditor();
+          await loadMedia(false, true);
+          toast('标签已更新');
+        }catch(err){
+          toast(err.message || '标签保存失败');
+          if(saveButton) saveButton.disabled = false;
+        }
+      }
+
+      document.addEventListener('click', event => {
+        const tagButton = event.target.closest('[data-inline-filter-tag]');
+        if(tagButton){
+          event.preventDefault(); event.stopPropagation();
+          closeEditor();
+          state.activeTag = tagButton.dataset.inlineFilterTag;
+          renderTags(); applyFilters();
+          window.scrollTo({top:0,behavior:'smooth'});
+          return;
+        }
+        const editButton = event.target.closest('[data-inline-edit-tags]');
+        if(editButton){
+          event.preventDefault(); event.stopPropagation();
+          openEditor(editButton, editButton.dataset.inlineEditTags);
+          return;
+        }
+        if(editor && !editor.classList.contains('hidden') && !event.target.closest('.inline-tag-popover')) closeEditor();
+      });
+
+      window.addEventListener('resize', positionEditor);
+      window.addEventListener('scroll', positionEditor, true);
+
+      const observer = new MutationObserver(queueEnhance);
+      const grid = document.querySelector('#mediaGrid');
+      const rail = document.querySelector('#continueRail');
+      if(grid) observer.observe(grid,{childList:true,subtree:true});
+      if(rail) observer.observe(rail,{childList:true,subtree:true});
+      queueEnhance();
+    })();
+  </script>
 </body>
 </html>
