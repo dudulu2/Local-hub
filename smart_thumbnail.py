@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -11,10 +10,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-try:
-    import imageio_ffmpeg
-except Exception:
-    imageio_ffmpeg = None
+import media_probe
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff"}
 
@@ -26,10 +22,11 @@ _EXTRACTORS = threading.BoundedSemaphore(2)
 
 _HOVER_LOCK = threading.RLock()
 _HOVER_CACHE: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
-_HOVER_CACHE_MAX = 12
-_HOVER_CACHE_TTL = 45.0
+_HOVER_CACHE_MAX = 24
+_HOVER_CACHE_TTL = 60.0
 _HOVER_EXTRACTOR = threading.BoundedSemaphore(1)
-_HOVER_SEEKS = (6.0, 24.0)
+_HOVER_RATIOS = (0.08, 0.22, 0.38, 0.54, 0.70, 0.86)
+_HOVER_FALLBACK_SEEKS = (3.0, 8.0, 18.0, 36.0, 72.0, 120.0)
 
 
 def _cache_get(key: str) -> bytes | None:
@@ -122,11 +119,9 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
                 return None
 
             try:
-                # First ask Explorer's shared cache only. This is the cheapest path.
                 hbitmap = factory.GetImage(SIZE(size, size), 0x08 | 0x10)
             except Exception:
                 try:
-                    # Cache miss: allow the registered Shell provider to extract once.
                     hbitmap = factory.GetImage(SIZE(size, size), 0x08 | 0x01)
                 except Exception:
                     return None
@@ -206,19 +201,8 @@ def _pil_thumbnail(path: Path, size: int) -> bytes | None:
         return None
 
 
-def _ffmpeg_exe() -> str | None:
-    if imageio_ffmpeg is not None:
-        try:
-            exe = imageio_ffmpeg.get_ffmpeg_exe()
-            if exe and Path(exe).exists():
-                return exe
-        except Exception:
-            pass
-    return shutil.which("ffmpeg")
-
-
 def _ffmpeg_frame(path: Path, size: int, seek: float, timeout: int = 7) -> bytes | None:
-    exe = _ffmpeg_exe()
+    exe = media_probe.ffmpeg_exe()
     if not exe:
         return None
     command = [
@@ -242,7 +226,6 @@ def _ffmpeg_frame(path: Path, size: int, seek: float, timeout: int = 7) -> bytes
 def _ffmpeg_thumbnail(path: Path, size: int) -> bytes | None:
     data = _ffmpeg_frame(path, size, 1.0, timeout=8)
     if data is None:
-        # Some very short / odd containers cannot seek to one second.
         data = _ffmpeg_frame(path, size, 0.0, timeout=8)
     return data
 
@@ -269,13 +252,23 @@ def get_thumbnail(path: Path, size: int = 360) -> bytes | None:
         return data
 
 
-def get_hover_frame(path: Path, slot: int = 0, size: int = 360) -> bytes | None:
-    """Return one just-in-time video frame without attaching the video stream.
+def _hover_seek(path: Path, slot: int) -> float:
+    probe = media_probe.probe_media(path)
+    duration = probe.get("duration") if probe.get("ok") else None
+    if isinstance(duration, (int, float)) and duration > 1.2:
+        ratio = _HOVER_RATIOS[slot]
+        return max(0.25, min(float(duration) - 0.35, float(duration) * ratio))
+    return _HOVER_FALLBACK_SEEKS[slot]
 
-    Only one hover extraction is allowed globally. Two fixed input-side seek points
-    keep I/O bounded and avoid decoding through the full video.
+
+def get_hover_frame(path: Path, slot: int = 0, size: int = 360) -> bytes | None:
+    """Return one just-in-time preview frame.
+
+    Six positions are distributed through the video when duration is known.
+    Only one extractor may run globally, so fast mouse movement cannot fan out
+    into parallel video reads.
     """
-    slot = 0 if slot <= 0 else 1
+    slot = max(0, min(len(_HOVER_RATIOS) - 1, int(slot)))
     try:
         identity = _identity(path, size)
     except OSError:
@@ -288,14 +281,14 @@ def get_hover_frame(path: Path, slot: int = 0, size: int = 360) -> bytes | None:
         hit = _hover_cache_get(key)
         if hit is not None:
             return hit
-        data = _ffmpeg_frame(path, size, _HOVER_SEEKS[slot], timeout=6)
+        data = _ffmpeg_frame(path, size, _hover_seek(path, slot), timeout=6)
         if data:
             _hover_cache_put(key, data)
         return data
 
 
 def ffmpeg_available() -> bool:
-    return bool(_ffmpeg_exe())
+    return bool(media_probe.ffmpeg_exe())
 
 
 def clear_memory_cache() -> None:
@@ -303,3 +296,4 @@ def clear_memory_cache() -> None:
         _CACHE.clear()
     with _HOVER_LOCK:
         _HOVER_CACHE.clear()
+    media_probe.clear_probe_cache()
