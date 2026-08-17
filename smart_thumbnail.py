@@ -9,14 +9,16 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 try:
     import imageio_ffmpeg
 except Exception:
     imageio_ffmpeg = None
 
-# Session-only thumbnail cache. Nothing is written beside the media files.
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff"}
+
+# Session-only LRU. It is deliberately small and vanishes when LocalHub exits.
 _CACHE_LOCK = threading.RLock()
 _CACHE: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
 _CACHE_MAX = 48
@@ -52,11 +54,7 @@ def _identity(path: Path, size: int) -> str:
 
 
 def _shell_thumbnail(path: Path, size: int) -> bytes | None:
-    """Use the Windows Shell shared thumbnail cache when available.
-
-    comtypes is imported lazily so source mode on non-Windows platforms still works.
-    First ask for a cached thumbnail only; on a miss allow Shell to extract/cache it.
-    """
+    """Use Windows Explorer's shared Shell thumbnail cache when possible."""
     if os.name != "nt":
         return None
     try:
@@ -91,11 +89,12 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
             if hr != 0 or not factory:
                 return None
 
-            # THUMBNAILONLY | INCACHEONLY. If Explorer already knows it, this is cheap.
             hbitmap = wintypes.HBITMAP()
+            # THUMBNAILONLY | INCACHEONLY first: use Explorer's existing cache.
             hr = factory.GetImage(SIZE(size, size), 0x08 | 0x10, byref(hbitmap))
             if hr != 0 or not hbitmap:
-                # Background path: allow the registered Shell provider to extract it.
+                # Background extraction path. Shell chooses the registered provider
+                # and stores the result in its global cache for other apps too.
                 hr = factory.GetImage(SIZE(size, size), 0x08 | 0x01, byref(hbitmap))
             if hr != 0 or not hbitmap:
                 return None
@@ -133,7 +132,7 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
             info = BITMAPINFO()
             info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
             info.bmiHeader.biWidth = width
-            info.bmiHeader.biHeight = -height  # top-down
+            info.bmiHeader.biHeight = -height
             info.bmiHeader.biPlanes = 1
             info.bmiHeader.biBitCount = 32
             info.bmiHeader.biCompression = 0
@@ -156,6 +155,23 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
         return None
 
 
+def _pil_thumbnail(path: Path, size: int) -> bytes | None:
+    if path.suffix.lower() not in IMAGE_EXTS:
+        return None
+    try:
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im)
+            if getattr(im, "is_animated", False):
+                im.seek(0)
+            im = im.convert("RGB")
+            im.thumbnail((size, size), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            im.save(out, format="JPEG", quality=72, optimize=False)
+            return out.getvalue()
+    except Exception:
+        return None
+
+
 def _ffmpeg_exe() -> str | None:
     if imageio_ffmpeg is not None:
         try:
@@ -171,8 +187,6 @@ def _ffmpeg_thumbnail(path: Path, size: int) -> bytes | None:
     exe = _ffmpeg_exe()
     if not exe:
         return None
-    # Input-side seek jumps to a nearby seek point/keyframe instead of decoding
-    # from the start. noaccurate_seek avoids decoding forward for exact timing.
     command = [
         exe, "-hide_banner", "-loglevel", "error", "-nostdin",
         "-ss", "1.0", "-noaccurate_seek", "-i", str(path),
@@ -180,13 +194,7 @@ def _ffmpeg_thumbnail(path: Path, size: int) -> bytes | None:
         "-vf", f"scale='min({size},iw)':-2",
         "-q:v", "8", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
     ]
-    kwargs = dict(
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        timeout=8,
-        check=False,
-    )
+    kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8, check=False)
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
@@ -210,6 +218,8 @@ def get_thumbnail(path: Path, size: int = 360) -> bytes | None:
         if hit is not None:
             return hit
         data = _shell_thumbnail(path, size)
+        if data is None:
+            data = _pil_thumbnail(path, size)
         if data is None:
             data = _ffmpeg_thumbnail(path, size)
         if data:
