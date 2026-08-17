@@ -22,6 +22,10 @@ def _json_bytes(payload: object) -> bytes:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+def _thumb_url(rel: str) -> str:
+    return "/api/smart/thumb?path=" + urllib.parse.quote(rel, safe="")
+
+
 def _norm_stem(name: str) -> str:
     stem = Path(name).stem.casefold()
     stem = re.sub(r"(?:img|image|photo|pic|screenshot|scan|page|pict|dsc)[-_ ]*", "", stem)
@@ -31,7 +35,7 @@ def _norm_stem(name: str) -> str:
 def _pack_like(images: list[dict]) -> bool:
     if len(images) < 4:
         return False
-    # Cheap heuristic only: never decode thousands of images merely to classify a folder.
+    # Classify from already-indexed metadata; never decode the whole folder.
     sample = images[: min(24, len(images))]
     stems = [_norm_stem(item["name"]) for item in sample]
     useful = [stem for stem in stems if stem]
@@ -61,7 +65,22 @@ def _media_public(item: dict) -> dict:
         "modified": int(item.get("modified", 0)),
         "tags": list(item.get("tags", [])),
         "url": item["url"],
-        "thumb": "/api/smart/thumb?path=" + urllib.parse.quote(item["id"], safe=""),
+        "thumb": _thumb_url(item["id"]),
+    }
+
+
+def _pack_public(folder: str, images: list[dict]) -> dict:
+    images = sorted(images, key=lambda item: item["name"].casefold())
+    cover = images[0]
+    return {
+        "kind": "pack",
+        "id": f"pack:{folder}",
+        "folder": folder,
+        "name": Path(folder).name if folder else "根目录图片",
+        "count": len(images),
+        "cover": cover["url"],
+        "coverThumb": _thumb_url(cover["id"]),
+        "modified": max(i.get("modified", 0) for i in images),
     }
 
 
@@ -141,7 +160,7 @@ class Catalog:
     def folders(self, limit: int = 120) -> list[dict]:
         self._await()
         with self.lock:
-            rows = list(self.folder_stats.values())
+            rows = [dict(row) for row in self.folder_stats.values()]
         rows.sort(key=lambda r: (r["path"].count("/"), -r["videos"], -r["images"], r["path"].casefold()))
         return rows[:limit]
 
@@ -165,16 +184,15 @@ class Catalog:
             rng = random.Random(seed)
             folders = list(by_folder)
             rng.shuffle(folders)
-            # First pass: one item per folder for variety.
             for folder in folders:
                 choices = [x for x in by_folder[folder] if x["id"] not in selected_ids]
                 if not choices:
                     continue
                 item = rng.choice(choices)
-                selected.append(item); selected_ids.add(item["id"])
+                selected.append(item)
+                selected_ids.add(item["id"])
                 if len(selected) >= HOME_MIN:
                     break
-            # Second pass if the library has very few folders.
             if len(selected) < HOME_MAX:
                 rest = [item for item in all_videos if item["id"] not in selected_ids]
                 rng.shuffle(rest)
@@ -192,7 +210,7 @@ class Catalog:
                 remainder = path[len(prefix):]
                 if "/" not in remainder:
                     child_paths.add(path)
-            child_rows = [self.folder_stats[path] for path in child_paths]
+            child_rows = [dict(self.folder_stats[path]) for path in child_paths]
 
         child_rows.sort(key=lambda row: row["name"].casefold())
         result: list[dict] = [{"kind": "folder", **row} for row in child_rows]
@@ -201,24 +219,19 @@ class Catalog:
         videos.sort(key=lambda item: item.get("modified", 0), reverse=True)
         result.extend(_media_public(item) for item in videos)
 
-        # Mixed folders behave like a real collection: videos are individual,
-        # all still images are represented by one book/pack cover.
+        # In a mixed folder, all stills collapse into one image pack. In an
+        # image-only folder, pack them only when names or sizes look related.
         should_pack = bool(images) and (bool(videos) or _pack_like(images))
         if should_pack:
-            images.sort(key=lambda item: item["name"].casefold())
-            cover = images[0]
-            result.append({
-                "kind": "pack", "id": f"pack:{folder}", "folder": folder,
-                "name": Path(folder).name if folder else "根目录图片",
-                "count": len(images), "cover": cover["url"], "modified": max(i.get("modified", 0) for i in images),
-            })
+            result.append(_pack_public(folder, images))
         else:
             result.extend(_media_public(item) for item in images)
         return result
 
     def list_view(self, view: str, folder: str = "", q: str = "", offset: int = 0, limit: int = PAGE_LIMIT) -> dict:
         self._await()
-        limit = max(1, min(60, limit)); offset = max(0, offset)
+        limit = max(1, min(60, limit))
+        offset = max(0, offset)
         if view == "folder":
             rows = self._folder_payload(folder)
             title = folder or "根目录"
@@ -231,8 +244,7 @@ class Catalog:
                 images = [item for item in direct if item["type"] == "image"]
                 videos = [item for item in direct if item["type"] == "video"]
                 if images and (videos or _pack_like(images)):
-                    images.sort(key=lambda item: item["name"].casefold())
-                    rows.append({"kind": "pack", "id": f"pack:{path}", "folder": path, "name": Path(path).name if path else "根目录图片", "count": len(images), "cover": images[0]["url"], "modified": max(i.get("modified", 0) for i in images)})
+                    rows.append(_pack_public(path, images))
             rows.sort(key=lambda row: row.get("modified", 0), reverse=True)
             title = "图包 / 图册"
         elif view == "search":
@@ -250,6 +262,12 @@ class Catalog:
             title = "全部视频"
         page = rows[offset: offset + limit]
         return {"title": title, "items": page, "total": len(rows), "offset": offset, "limit": limit, "hasMore": offset + limit < len(rows)}
+
+    def by_ids(self, ids: list[str]) -> list[dict]:
+        self._await()
+        with self.lock:
+            rows = [self.by_id[item_id] for item_id in ids if item_id in self.by_id]
+        return [_media_public(item) for item in rows]
 
     def pack(self, folder: str) -> dict:
         self._await()
@@ -286,7 +304,8 @@ def install(server_module) -> None:
                 try:
                     raw = path.read_bytes()
                 except OSError:
-                    self.send_error(HTTPStatus.NOT_FOUND); return
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
                 self._headers(HTTPStatus.OK, content_type, len(raw), {"Cache-Control": "no-cache"})
                 self.wfile.write(raw)
 
@@ -303,14 +322,23 @@ def install(server_module) -> None:
                 if path == "/api/smart/home":
                     return self._send_json({"items": catalog.home(), "folders": catalog.folders(), "stats": catalog.stats()})
                 if path == "/api/smart/list":
+                    try:
+                        offset = int(query.get("offset", ["0"])[0] or 0)
+                        limit = int(query.get("limit", [str(PAGE_LIMIT)])[0] or PAGE_LIMIT)
+                    except ValueError:
+                        offset, limit = 0, PAGE_LIMIT
                     payload = catalog.list_view(
                         query.get("view", ["videos"])[0],
                         query.get("folder", [""])[0],
                         query.get("q", [""])[0],
-                        int(query.get("offset", ["0"])[0] or 0),
-                        int(query.get("limit", [str(PAGE_LIMIT)])[0] or PAGE_LIMIT),
+                        offset,
+                        limit,
                     )
                     return self._send_json(payload)
+                if path == "/api/smart/by-ids":
+                    raw_ids = query.get("ids", [""])[0]
+                    ids = [item for item in raw_ids.split("\n") if item][:120]
+                    return self._send_json({"items": catalog.by_ids(ids)})
                 if path == "/api/smart/pack":
                     return self._send_json(catalog.pack(query.get("folder", [""])[0]))
                 if path == "/api/smart/rescan":
@@ -321,12 +349,12 @@ def install(server_module) -> None:
                     try:
                         media = store.resolve_media(relative)
                     except (ValueError, FileNotFoundError):
-                        self.send_error(HTTPStatus.NOT_FOUND); return
-                    if media.suffix.lower() not in server_module.VIDEO_EXTS:
-                        self.send_error(HTTPStatus.BAD_REQUEST); return
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
                     data = smart_thumbnail.get_thumbnail(media, 360)
                     if not data:
-                        self.send_error(HTTPStatus.SERVICE_UNAVAILABLE); return
+                        self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
+                        return
                     self._headers(HTTPStatus.OK, "image/jpeg", len(data), {"Cache-Control": "no-store"})
                     self.wfile.write(data)
                     return
