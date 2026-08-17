@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 import webbrowser
@@ -39,6 +40,17 @@ def show_error(title: str, message: str) -> None:
         ctypes.windll.user32.MessageBoxW(None, str(message), str(title), 0x10)
     else:
         print(f"{title}: {message}", file=sys.stderr)
+
+
+def write_startup_log(root: Path, message: str) -> Path | None:
+    try:
+        folder = data_dir(root)
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "startup-error.log"
+        target.write_text(message, "utf-8")
+        return target
+    except OSError:
+        return None
 
 
 def acquire_instance_mutex(root: Path):
@@ -90,15 +102,17 @@ def wait_existing_url(root: Path, seconds: float = 8.0) -> str | None:
     return None
 
 
-def wait_http(url: str, seconds: float = 10.0) -> bool:
+def wait_health(base_url: str, seconds: float = 8.0) -> bool:
+    url = base_url.rstrip("/") + "/api/health"
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=0.5) as response:
-                if 200 <= response.status < 500:
-                    return True
+            with urllib.request.urlopen(url, timeout=0.6) as response:
+                if response.status == 200:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    return payload.get("ok") is True
         except Exception:
-            time.sleep(0.12)
+            time.sleep(0.1)
     return False
 
 
@@ -129,10 +143,8 @@ def clear_runtime(root: Path) -> None:
 
 
 def cleanup_compat_cache(root: Path) -> None:
-    """Clean compatibility files without assuming one compat_support API name."""
     try:
         import compat_support
-
         cleaner = getattr(compat_support, "cleanup_root", None)
         if not callable(cleaner):
             cleaner = getattr(compat_support, "cleanup_compat_dir", None)
@@ -141,28 +153,61 @@ def cleanup_compat_cache(root: Path) -> None:
             return
     except Exception:
         pass
-
     try:
         shutil.rmtree(root / ".localhub" / "compat", ignore_errors=True)
     except OSError:
         pass
 
 
+def configure_server(root: Path):
+    """Install LocalHub extensions exactly once for this process and return server module."""
+    import server
+    import smart_mode
+    import catalog_cache
+    import preview_support
+    import compat_support
+    import rating_support
+
+    app_dir = Path(server.APP_DIR)
+    server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
+    server.STATIC_FILES["/ux_enhancements.css"] = app_dir / "ux_enhancements.css"
+    server.STATIC_FILES["/move_branding.js"] = app_dir / "move_branding.js"
+
+    rating_support.install(server, smart_mode)
+    catalog_cache.cleanup_legacy_thumbnail_cache(root)
+    catalog_cache.install(smart_mode)
+    smart_mode.install(server)
+    preview_support.install(server)
+    compat_support.install(server)
+    cleanup_compat_cache(root)
+    return server
+
+
+def create_http_server(root: Path):
+    """Create and bind the HTTP server synchronously so startup failures cannot hide in a thread."""
+    server_module = configure_server(root)
+    store = server_module.MediaStore(root)
+    handler = server_module.make_handler(store)
+    try:
+        httpd = server_module.ThreadingHTTPServer((HOST, PREFERRED_PORT), handler)
+    except OSError:
+        # Port 8787 is only a preference. Let Windows atomically allocate a free
+        # port instead of probing then racing another process for the same port.
+        httpd = server_module.ThreadingHTTPServer((HOST, 0), handler)
+    httpd.daemon_threads = True
+    httpd.quiet = True
+    port = int(httpd.server_address[1])
+    return httpd, port
+
+
 def self_test() -> int:
-    """Exercise packaged startup dependencies without opening UI or a server."""
+    """Exercise the *real packaged startup path*, including an actual HTTP server."""
+    httpd = None
     try:
         import server
-        import smart_mode  # noqa: F401
-        import catalog_cache  # noqa: F401
-        import preview_support  # noqa: F401
         import compat_support
-        import rating_support  # noqa: F401
-
         if not callable(getattr(compat_support, "install", None)):
             return 11
-        if not any(callable(getattr(compat_support, name, None)) for name in ("cleanup_root", "cleanup_compat_dir")):
-            return 12
-
         app_dir = Path(server.APP_DIR)
         for name in ("smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js", "move_branding.js"):
             if not (app_dir / name).exists():
@@ -170,20 +215,38 @@ def self_test() -> int:
 
         with tempfile.TemporaryDirectory(prefix="localhub-selftest-") as tmp:
             root = Path(tmp)
-            compat = root / ".localhub" / "compat"
-            compat.mkdir(parents=True)
-            (compat / "probe.tmp").write_bytes(b"ok")
-            cleanup_compat_cache(root)
-            if compat.exists():
+            httpd, port = create_http_server(root)
+            thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+            thread.start()
+            base = f"http://{HOST}:{port}"
+            if not wait_health(base, 5.0):
                 return 30
+            with urllib.request.urlopen(base + "/", timeout=3.0) as response:
+                body = response.read(4096)
+                if response.status != 200 or b"LocalHub" not in body:
+                    return 31
+            with urllib.request.urlopen(base + "/api/smart/home", timeout=5.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                if "items" not in payload or "stats" not in payload:
+                    return 32
+            httpd.shutdown()
+            thread.join(timeout=2.0)
+            httpd.server_close()
+            httpd = None
         return 0
     except Exception:
         return 99
+    finally:
+        if httpd is not None:
+            try:
+                httpd.shutdown()
+                httpd.server_close()
+            except Exception:
+                pass
 
 
 def create_tray_image():
     from PIL import Image, ImageDraw
-
     image = Image.new("RGBA", (64, 64), (12, 12, 13, 255))
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((3, 3, 61, 61), radius=14, fill=(255, 151, 0, 255))
@@ -192,7 +255,7 @@ def create_tray_image():
     return image
 
 
-def run_tray(root: Path, url: str) -> None:
+def run_tray(root: Path, url: str, httpd) -> None:
     import pystray
 
     def open_library(icon=None, item=None):
@@ -210,6 +273,11 @@ def run_tray(root: Path, url: str) -> None:
         except Exception:
             pass
         cleanup_compat_cache(root)
+        try:
+            httpd.shutdown()
+            httpd.server_close()
+        except Exception:
+            pass
         icon.stop()
         os._exit(0)
 
@@ -238,61 +306,45 @@ def main() -> int:
         show_error("LocalHub", "LocalHub 已经在启动中，请稍后再试。")
         return 0
 
+    httpd = None
     try:
-        import server
-        import smart_mode
-        import catalog_cache
-        import preview_support
-        import compat_support
-        import rating_support
-
-        app_dir = Path(server.APP_DIR)
-        server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
-        server.STATIC_FILES["/ux_enhancements.css"] = app_dir / "ux_enhancements.css"
-        server.STATIC_FILES["/move_branding.js"] = app_dir / "move_branding.js"
-
-        rating_support.install(server, smart_mode)
-        catalog_cache.cleanup_legacy_thumbnail_cache(root)
-        catalog_cache.install(smart_mode)
-        smart_mode.install(server)
-        preview_support.install(server)
-        compat_support.install(server)
-        cleanup_compat_cache(root)
-
-        port = server.pick_port(HOST, PREFERRED_PORT)
+        httpd, port = create_http_server(root)
         url = f"http://{HOST}:{port}/"
-
-        def serve() -> None:
-            old_argv = list(sys.argv)
-            try:
-                sys.argv = [
-                    "LocalHub",
-                    "--root", str(root),
-                    "--host", HOST,
-                    "--port", str(port),
-                    "--no-open",
-                    "--quiet",
-                ]
-                server.main()
-            finally:
-                sys.argv = old_argv
-
-        thread = threading.Thread(target=serve, name="LocalHubServer", daemon=True)
+        thread = threading.Thread(
+            target=httpd.serve_forever,
+            kwargs={"poll_interval": 0.2},
+            name="LocalHubServer",
+            daemon=True,
+        )
         thread.start()
 
-        if not wait_http(url):
-            show_error("LocalHub 启动失败", "本地服务没有成功启动。请检查 .localhub 目录或重新下载最新版。")
-            return 1
+        if not wait_health(url):
+            raise RuntimeError("HTTP 服务已创建，但健康检查没有响应。")
 
         write_runtime(root, port)
+        try:
+            (data_dir(root) / "startup-error.log").unlink(missing_ok=True)
+        except OSError:
+            pass
         webbrowser.open(url)
-        run_tray(root, url)
+        run_tray(root, url, httpd)
         return 0
     except Exception as exc:
-        show_error("LocalHub 启动失败", str(exc))
+        detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        log_path = write_startup_log(root, detail)
+        message = f"{type(exc).__name__}: {exc}"
+        if log_path:
+            message += f"\n\n详细日志：{log_path}"
+        show_error("LocalHub 启动失败", message)
         return 1
     finally:
         clear_runtime(root)
+        if httpd is not None:
+            try:
+                httpd.shutdown()
+                httpd.server_close()
+            except Exception:
+                pass
         if mutex_handle and os.name == "nt":
             ctypes.windll.kernel32.CloseHandle(mutex_handle)
 
