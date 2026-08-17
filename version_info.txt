@@ -1,3 +1,4 @@
+# CI verification branch for LocalHub 2.2.1
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(2, 2, 1, 0),
