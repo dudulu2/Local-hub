@@ -25,6 +25,28 @@ on:
       - 'version_info.txt'
       - 'tools/**'
       - '.github/workflows/build-windows.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'launcher.py'
+      - 'server.py'
+      - 'smart_mode.py'
+      - 'smart_thumbnail.py'
+      - 'preview_support.py'
+      - 'media_probe.py'
+      - 'compat_support.py'
+      - 'rating_support.py'
+      - 'catalog_cache.py'
+      - 'smart_index.html'
+      - 'smart_ui.css'
+      - 'smart_ui.js'
+      - 'ux_enhancements.css'
+      - 'ux_enhancements.js'
+      - 'move_branding.js'
+      - 'LocalHub.spec'
+      - 'version_info.txt'
+      - 'tools/**'
+      - '.github/workflows/build-windows.yml'
 
 permissions:
   contents: write
