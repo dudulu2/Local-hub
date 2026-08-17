@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -126,6 +127,31 @@ def clear_runtime(root: Path) -> None:
         pass
 
 
+def cleanup_compat_cache(root: Path) -> None:
+    """Clean LocalHub's temporary compatibility files without assuming one API name.
+
+    This deliberately supports both the current compat_support.cleanup_root() and
+    the older cleanup_compat_dir() name so a helper rename can never prevent the
+    application itself from starting again.
+    """
+    try:
+        import compat_support
+
+        cleaner = getattr(compat_support, "cleanup_root", None)
+        if not callable(cleaner):
+            cleaner = getattr(compat_support, "cleanup_compat_dir", None)
+        if callable(cleaner):
+            cleaner(root)
+            return
+    except Exception:
+        pass
+
+    try:
+        shutil.rmtree(root / ".localhub" / "compat", ignore_errors=True)
+    except OSError:
+        pass
+
+
 def create_tray_image():
     from PIL import Image, ImageDraw
 
@@ -154,11 +180,7 @@ def run_tray(root: Path, url: str) -> None:
             smart_thumbnail.clear_memory_cache()
         except Exception:
             pass
-        try:
-            import compat_support
-            compat_support.cleanup_compat_dir(root)
-        except Exception:
-            pass
+        cleanup_compat_cache(root)
         icon.stop()
         os._exit(0)
 
@@ -211,7 +233,7 @@ def main() -> int:
         smart_mode.install(server)
         preview_support.install(server)
         compat_support.install(server)
-        compat_support.cleanup_compat_dir(root)
+        cleanup_compat_cache(root)
 
         port = server.pick_port(HOST, PREFERRED_PORT)
         url = f"http://{HOST}:{port}/"
