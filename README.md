@@ -1,220 +1,193 @@
 # LocalHub
 
-> Turn any folder into a private local media site.
+**Turn a folder of local videos and images into a private Pornhub-style media site — automatically, locally, and offline.**
 
-LocalHub 是一个完全本地运行的媒体浏览器和整理工具。把 `LocalHub.exe` 放进你的媒体总目录，双击后即可像浏览网站一样查看视频与图包，并在观看过程中直接完成 Tag、评分、收藏、改名和移动分类。
+Drop `LocalHub.exe` into your media folder and double-click it. LocalHub scans the folder, opens a local website in your browser, and lets you browse, play, tag, rate, favorite, rename, and move your media without uploading anything.
 
-**不需要安装 Python，不需要 Docker，不需要导入媒体库，也不会把媒体上传到互联网。**
+**One EXE. No import. No server setup. No account. No cloud.**
 
-[![Build Windows EXE](https://github.com/dudulu2/local-web/actions/workflows/build-windows.yml/badge.svg)](https://github.com/dudulu2/local-web/actions/workflows/build-windows.yml)
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-## 为什么是 LocalHub
+[![Build Windows EXE](https://github.com/dudulu2/Local-hub/actions/workflows/build-windows.yml/badge.svg)](https://github.com/dudulu2/Local-hub/actions/workflows/build-windows.yml)
 
-很多媒体管理器很强，但使用起来更像数据库或文件管理器。LocalHub 的目标不同：
+## What it feels like
 
-- **先浏览，后整理**：观看体验优先，整理动作嵌在卡片和播放器里。
-- **零配置启动**：一个 EXE 放进媒体目录即可运行。
-- **网站式体验**：首页、分类、搜索、收藏、继续观看、播放器都围绕浏览体验设计。
-- **拖动分类**：进入“移动位置”模式后，可直接把视频拖到左侧文件夹完成归类。
-- **图片自动折叠成图包**：同一文件夹中的多张图片只显示一个封面，点开后再阅读整套图片。
-- **完全本地**：默认只绑定 `127.0.0.1`，媒体不会上传到远程服务器。
+LocalHub is not meant to feel like a database or a file manager. It is designed to feel like a private media website built from the folders you already have.
 
-## 30 秒开始使用
+- **Website-style browsing** — home feed, folders, search, favorites, continue watching, and a full player.
+- **Organize while watching** — add tags, rate, rename, favorite, and move files without leaving the viewing flow.
+- **Drag to classify** — drag a video directly onto a folder in the sidebar to move it there.
+- **Photo packs** — folders with multiple images are automatically grouped into a single album/card instead of flooding the page.
+- **Zero setup** — put one EXE in the media root and run it.
+- **Local by default** — LocalHub binds to `127.0.0.1` by default and does not upload your media.
 
-1. 从 GitHub Releases 下载 `LocalHub.exe`。
-2. 把它放到你的媒体总目录。
-3. 双击运行。
-4. 浏览器会自动打开 LocalHub。
-5. 退出时可使用 Windows 托盘中的 **退出 LocalHub**。
+## Quick start
+
+1. Download `LocalHub.exe` from [GitHub Releases](https://github.com/dudulu2/Local-hub/releases).
+2. Put it in the root folder that contains your videos and images.
+3. Double-click `LocalHub.exe`.
+4. LocalHub opens automatically in your browser.
+5. Use the Windows tray icon to reopen the site, open the media folder, or exit LocalHub.
 
 ```text
-媒体库/
+Media/
 ├─ LocalHub.exe
 ├─ video-a.mp4
-├─ 视频合集/
+├─ Collection/
 │  ├─ episode-01.mp4
 │  └─ episode-02.mp4
-└─ 图包/
+└─ Photo-Pack/
    ├─ 001.jpg
    ├─ 002.jpg
    └─ 003.jpg
 ```
 
-## Windows 第一次运行可能出现警告
+## Windows SmartScreen warning
 
-当前公开构建的 `LocalHub.exe` **没有商业代码签名证书**。因此在一台尚未建立应用信誉的 Windows 电脑上，Microsoft Defender SmartScreen 可能显示：
+Current public builds of `LocalHub.exe` are **not code-signed with a commercial certificate**. On some Windows PCs, Microsoft Defender SmartScreen may therefore show **Windows protected your PC** or **Unknown publisher** the first time you run it.
 
-> Windows 已保护你的电脑 / 未知发布者
+This is a reputation/signing warning for an unsigned application. It is not, by itself, a malware detection.
 
-这通常是 **未签名应用的信誉提示**，并不等同于 Windows 已检测到恶意代码。
+If you downloaded the EXE from this repository's official Release page:
 
-如果你确认 EXE 来自本仓库的 GitHub Release，可以：
+1. Click **More info** in the SmartScreen dialog.
+2. Confirm the application is `LocalHub.exe`.
+3. Optionally verify its SHA256 hash.
+4. Choose **Run anyway** if you want to continue.
 
-1. 在 SmartScreen 窗口点击 **“更多信息”**。
-2. 确认应用名称为 `LocalHub.exe`。
-3. 点击 **“仍要运行”**。
-
-每个正式构建同时生成 `SHA256.txt`。如需校验下载文件：
+Every official build also includes `SHA256.txt`:
 
 ```powershell
 Get-FileHash .\LocalHub.exe -Algorithm SHA256
 ```
 
-把结果与 Release 中的 `SHA256.txt` 对比即可。
+Compare the result with the hash published in the same Release.
 
-> 不建议关闭 Windows Defender，也不需要把整个目录加入杀毒软件白名单。
+You do **not** need to disable Windows Defender or whitelist your entire media folder.
 
-更多说明见 [`docs/windows-smartscreen.md`](docs/windows-smartscreen.md)。
+More details: [`docs/windows-smartscreen.md`](docs/windows-smartscreen.md)
 
-## 核心功能
+## Features
 
-### 像网站一样浏览本地媒体
+### Browse local media like a website
 
-- 轻量首页推荐
-- 左侧文件夹导航
-- 全部视频
-- 图包 / 图册
-- 搜索
-- 收藏
-- 继续观看
-- 真正分页，不把整个媒体库一次性塞进浏览器
+- Lightweight home feed
+- Folder navigation
+- All videos view
+- Photo packs / albums
+- Search
+- Favorites
+- Continue watching
+- Real pagination instead of loading the whole library at once
 
-### 边看边整理
+### Organize without breaking the viewing experience
 
-- 视频卡片下方固定 Tag 条
-- 卡片内快速添加 Tag
-- 评分
-- 收藏
-- 播放进度记录
-- 文件改名并保留扩展名
-- 移动到已有目录
-- 拖动视频到左侧文件夹进行分类
-- 改名 / 移动后迁移收藏和播放进度
-- 同名目标文件不会被覆盖
+- Quick tags directly on media cards
+- Ratings
+- Favorites
+- Playback progress
+- Rename files while preserving extensions
+- Move files into existing folders
+- Drag videos onto sidebar folders to classify them
+- Preserve favorites and playback progress after rename/move operations
+- Never overwrite an existing file with the same name
 
-### 图包模式
+### Automatic photo-pack mode
 
-同一文件夹中存在 2 张以上图片时，LocalHub 会把它视为一个图包：
+When a folder contains two or more images, LocalHub can represent them as one photo-pack card:
 
-- 首页只展示一个图包封面
-- 打开后才逐张读取原图
-- 混合目录中的视频仍独立展示
+- one cover instead of hundreds of image cards;
+- full images are loaded only after opening the pack;
+- videos in mixed folders still appear as normal video items.
 
-这避免大型图片目录在首页生成几百或几千张卡片。
+## Designed for large local libraries
 
-## 性能设计
+LocalHub avoids attaching a real `<video>` element to every card.
 
-LocalHub 2 不再使用“一个视频卡片挂一个 `<video>`”的方式。
+### Lightweight catalog
 
-### 元数据索引
-
-第一次运行会建立轻量索引：
+On first run, LocalHub creates a small metadata index:
 
 ```text
 .localhub/
-├─ metadata.json     # Tag 等元数据
-├─ catalog-v2.json   # 轻量媒体索引快照
-└─ runtime.json      # 当前运行实例信息，退出后删除
+├─ metadata.json     # tags and related metadata
+├─ catalog-v2.json   # lightweight media catalog snapshot
+└─ runtime.json      # current runtime information; removed on exit
 ```
 
-第二次启动可先读取索引快照快速显示首页和目录，再刷新真实文件系统。
+On later launches, the cached catalog can make the interface available quickly while the real folders are refreshed in the background.
 
-### 缩略图按需获取
+### On-demand thumbnails
 
-缩略图按以下顺序尝试：
+Thumbnail generation prefers:
 
-1. Windows Shell / Explorer 共享缩略图缓存
-2. 图片使用 PIL 轻量缩放
-3. 视频缓存未命中时，使用 FFmpeg 快速 seek 抽取单帧
+1. Windows Shell / Explorer shared thumbnail cache
+2. lightweight PIL resizing for images
+3. fast FFmpeg single-frame extraction for videos when needed
 
-前端只为当前视口和下一排请求缩略图，并限制并发请求数。
+The frontend requests thumbnails around the current viewport instead of opening every media file at once.
 
-### 真正播放时才加载视频
+### Load video only when you actually play it
 
-只有打开播放器后才请求媒体文件。视频服务支持 HTTP Range，所以大文件可以拖动进度条，不需要整段读入内存。
+Media files are requested only after opening the player. LocalHub supports HTTP Range requests, so large videos can seek without loading the entire file into memory first.
 
-## 支持格式
+## Supported formats
 
-**图片**
+**Images**
 
 `jpg jpeg png webp gif avif bmp svg`
 
-**视频**
+**Videos**
 
 `mp4 webm m4v mov mkv avi ogv mpeg mpg ts`
 
-> 文件扩展名受支持，不代表浏览器一定能原生解码其中的视频/音频编码。LocalHub 会尽量提供预览与兼容性回退，但最终直接播放能力仍取决于浏览器和本机解码环境。
+> A supported file extension does not guarantee that every browser can decode every internal video/audio codec. Direct playback still depends on browser and local codec support.
 
-## 隐私与本地文件安全
+## Privacy and local-file safety
 
-- 默认仅监听 `127.0.0.1`
-- 不需要账户
-- 不上传媒体文件
-- Tag 保存在 `.localhub/metadata.json`
-- 不修改媒体文件内部元数据
-- 改名和移动会真实修改本地文件路径
+- Binds to `127.0.0.1` by default
+- No account required
+- No media upload
+- Tags are stored in `.localhub/metadata.json`
+- Media-file metadata is not rewritten
+- Rename and move operations really change local file paths
 
-请像使用文件管理器一样对待“改名”和“移动”操作。
+Treat rename and move actions the same way you would in a file manager.
 
-## Windows EXE 构建
+## Build the Windows EXE
 
-普通用户不需要 Python。开发者可运行：
+Regular users do not need Python. Developers can build locally with:
 
 ```powershell
 .\build_windows.ps1
 ```
 
-GitHub Actions 会自动执行：
+GitHub Actions validates Python and frontend JavaScript, runs catalog/preview/compatibility/metadata smoke tests, builds the single-file Windows GUI executable, generates SHA256, and uploads the build artifact.
 
-1. Python 语法校验
-2. 前端 JavaScript 语法校验
-3. 目录 / 首页 / 图包 smoke test
-4. 预览提取测试
-5. 媒体兼容性测试
-6. 元数据 UX 测试
-7. Windows 单文件 GUI EXE 构建
-8. SHA256 生成
-9. Artifact 上传
+Pushing a `v*` tag automatically creates a GitHub Release containing `LocalHub.exe` and `SHA256.txt`.
 
-推送 `v*` tag 时会自动创建 GitHub Release，并附带 `LocalHub.exe` 与 `SHA256.txt`。
+## Project direction
 
-## 项目定位
+LocalHub is intentionally not trying to become a heavy media database.
 
-LocalHub 不追求成为一个重型媒体数据库。它更像是：
+Its goal is simple:
 
-> **一个把普通文件夹瞬间变成本地私人视频网站的工具。**
+> **Your files stay ordinary files. LocalHub makes them feel like a private media website.**
 
-如果你的第一需求是“舒服地看”，第二需求才是“顺手整理”，LocalHub 就是为这个场景设计的。
+Current priorities are better playback compatibility, smoother keyboard navigation, faster bulk organization, an optional LAN mode, and continued performance work for larger libraries.
 
-## Roadmap
+## Feedback
 
-目前更关注体验和稳定性，而不是堆功能。优先方向包括：
+When reporting a problem, please include:
 
-- 更好的首屏展示与演示素材
-- 更稳定的媒体兼容性回退
-- 更完整的键盘快捷键
-- 更自然的批量整理流程
-- 可选的局域网访问模式
-- 跨平台可行性评估
+- Windows version
+- LocalHub version / Release name
+- media extension and codec information if known
+- steps to reproduce
+- whether the same file plays directly in your browser
 
-## 反馈
-
-如果遇到问题，请在 Issues 中尽量附上：
-
-- Windows 版本
-- LocalHub 版本 / Release 名称
-- 媒体文件扩展名与编码信息（如知道）
-- 复现步骤
-- 是否能在浏览器中直接播放同一文件
-
-请不要上传私人媒体文件本体。
+Please do not upload private media files to an issue.
 
 ---
 
-### English
-
-**LocalHub turns a normal media folder into a private local media site.**
-
-Put `LocalHub.exe` in your media root, double-click it, and browse videos and photo collections in your browser. Tag, rate, favorite, rename, and drag files into folders without leaving the viewing flow. LocalHub runs locally, binds to `127.0.0.1` by default, and does not upload your media.
-
-Windows may show a SmartScreen warning because public builds are currently unsigned. Download only from this repository's Releases page and verify the provided SHA256 if needed.
+*“Pornhub-style” describes the familiar card/grid browsing pattern and interaction style only. LocalHub is an independent project and is not affiliated with Pornhub.*
