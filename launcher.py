@@ -149,6 +149,11 @@ def run_tray(root: Path, url: str) -> None:
 
     def quit_app(icon, item=None):
         clear_runtime(root)
+        try:
+            import smart_thumbnail
+            smart_thumbnail.clear_memory_cache()
+        except Exception:
+            pass
         icon.stop()
         os._exit(0)
 
@@ -165,7 +170,6 @@ def run_tray(root: Path, url: str) -> None:
 def main() -> int:
     root = media_root()
     if getattr(sys, "frozen", False):
-        # PyInstaller --windowed has no console. Redirect defensive prints from server.py.
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
@@ -180,11 +184,11 @@ def main() -> int:
 
     try:
         import server
-        import thumbnail_support
+        import smart_mode
 
-        # Adds a lightweight JPEG thumbnail pipeline. Grid cards never need to
-        # attach the original video stream; only the full viewer does that.
-        thumbnail_support.install(server)
+        # LocalHub 2: the browser receives only the current page, while a
+        # lightweight in-memory catalog handles search/folders/collections.
+        smart_mode.install(server)
 
         port = server.pick_port(HOST, PREFERRED_PORT)
         url = f"http://{HOST}:{port}/"
