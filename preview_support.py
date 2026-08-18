@@ -5,6 +5,7 @@ import urllib.parse
 from http import HTTPStatus
 
 import smart_thumbnail
+from io_scheduler import SCHEDULER
 
 HOVER_SLOTS = 6
 
@@ -23,6 +24,14 @@ def install(server_module) -> None:
                 query = urllib.parse.parse_qs(parsed.query)
 
                 if parsed.path == "/api/smart/hover":
+                    # Playback and seeking always win. Returning 204 is cheaper
+                    # than making the browser wait behind an FFmpeg disk seek.
+                    if SCHEDULER.busy():
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("X-LocalHub-Preview", "paused-for-playback")
+                        self.end_headers()
+                        return
                     relative = query.get("path", [""])[0]
                     try:
                         slot = int(query.get("slot", ["0"])[0] or 0)
@@ -54,7 +63,13 @@ def install(server_module) -> None:
 
                 if parsed.path == "/api/smart/preview-status":
                     raw = json.dumps(
-                        {"ok": True, "ffmpeg": smart_thumbnail.ffmpeg_available(), "hoverWorkers": 1, "hoverSlots": HOVER_SLOTS},
+                        {
+                            "ok": True,
+                            "ffmpeg": smart_thumbnail.ffmpeg_available(),
+                            "hoverWorkers": 1,
+                            "hoverSlots": HOVER_SLOTS,
+                            "pausedForPlayback": SCHEDULER.busy(),
+                        },
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ).encode("utf-8")
