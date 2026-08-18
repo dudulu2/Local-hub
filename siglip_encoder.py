@@ -16,6 +16,7 @@ from typing import Iterable
 
 from PIL import Image, ImageOps, ImageStat
 
+from io_scheduler import SCHEDULER
 from visual_encoder import EncodedFrame, mean_vector, normalize
 
 MODEL_ID = "siglip-base-patch16-224-int8"
@@ -63,12 +64,22 @@ MODEL_FILES = (
 TOTAL_DOWNLOAD_BYTES = sum(row.size for row in MODEL_FILES)
 
 
+def _model_cache_dir(media_root: Path) -> Path:
+    # Model weights are machine resources, not library metadata. Keeping them
+    # out of the media root prevents Google Drive/OneDrive backup tools from
+    # uploading ~206 MB again for every LocalHub library.
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if os.name == "nt" and local_app_data:
+        return Path(local_app_data) / "LocalHub" / "models" / MODEL_ID
+    return media_root / ".localhub" / "models" / MODEL_ID
+
+
 class SiglipModelBundle:
     """External model bundle with explicit opt-in download and SHA256 verification."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.model_dir = root / ".localhub" / "models" / MODEL_ID
+        self.model_dir = _model_cache_dir(root)
         self.marker = self.model_dir / "manifest.json"
         self.lock = threading.RLock()
         self.installing = False
@@ -166,6 +177,11 @@ class SiglipModelBundle:
         written = 0
         with urllib.request.urlopen(request, timeout=45) as response, part.open("wb") as out:
             while True:
+                # Even an explicit model install yields to current playback.
+                # Network can continue to wait; disk writes resume when playback
+                # is no longer marked active.
+                while SCHEDULER.busy():
+                    time.sleep(0.25)
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
@@ -292,6 +308,8 @@ class SiglipOnnxEncoder:
         raise RuntimeError("SigLIP ONNX 没有返回预期的 768 维 pooler_output")
 
     def encode_jpeg(self, data: bytes) -> EncodedFrame | None:
+        if SCHEDULER.busy():
+            return None
         try:
             with Image.open(io.BytesIO(data)) as source:
                 image = ImageOps.exif_transpose(source).convert("RGB")
@@ -304,12 +322,16 @@ class SiglipOnnxEncoder:
                 pixels = np.transpose(pixels, (2, 0, 1))[None, ...]
         except Exception:
             return None
+        if SCHEDULER.busy():
+            return None
         session = self._vision_session()
         inputs = session.get_inputs()
         if not inputs:
             return None
         try:
             outputs = session.run(None, {inputs[0].name: pixels})
+            if SCHEDULER.busy():
+                return None
             return EncodedFrame(self._pick_embedding(outputs), quality)
         except Exception:
             return None
