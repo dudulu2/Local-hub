@@ -55,9 +55,10 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
 <style>
 .viewer.lh-probe-portrait{width:min(720px,94vw)!important;height:min(96vh,1040px)!important}
 .viewer.lh-probe-portrait .player-shell{height:calc(100% - 164px)!important}
-.viewer.lh-probe-portrait .viewer-stage{min-height:0!important}
-.viewer.lh-probe-portrait .viewer-stage video{width:auto!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important}
-.viewer.lh-probe-landscape .viewer-stage video{width:100%!important;height:100%!important;object-fit:contain!important;object-position:center center!important}
+.viewer.lh-probe-portrait .viewer-stage{min-height:0!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important}
+.viewer.lh-probe-portrait .viewer-stage video{width:var(--lh-fit-w,auto)!important;height:var(--lh-fit-h,100%)!important;max-width:100%!important;max-height:100%!important;object-fit:fill!important;object-position:center center!important;flex:none!important}
+.viewer.lh-probe-landscape .viewer-stage video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important}
+.viewer-stage.lh-click-toggle{cursor:pointer}
 @media(max-width:760px){.viewer.lh-probe-portrait{width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0!important}.viewer.lh-probe-portrait .player-shell{height:calc(100% - 160px)!important}}
 </style>
 <script>
@@ -67,22 +68,47 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
   const video=document.querySelector('#videoPlayer');
   const pathNode=document.querySelector('#viewerPath');
   if(!viewer||!stage||!video||!pathNode)return;
-  let token=0;
+  let token=0,displayAspect=0,fitFrame=0;
   const currentPath=()=>String(pathNode.textContent||'').trim();
+  const scheduleFit=()=>{
+    cancelAnimationFrame(fitFrame);
+    fitFrame=requestAnimationFrame(fit);
+  };
+  const fit=()=>{
+    fitFrame=0;
+    if(!displayAspect||!viewer.classList.contains('lh-probe-portrait'))return;
+    const sw=stage.clientWidth,sh=stage.clientHeight;
+    if(sw<2||sh<2)return;
+    let h=sh,w=h*displayAspect;
+    if(w>sw){w=sw;h=w/displayAspect;}
+    w=Math.max(1,Math.floor(w));
+    h=Math.max(1,Math.floor(h));
+    stage.style.setProperty('--lh-fit-w',`${w}px`);
+    stage.style.setProperty('--lh-fit-h',`${h}px`);
+  };
   const clear=()=>{
     token++;
+    displayAspect=0;
     viewer.classList.remove('lh-probe-portrait','lh-probe-landscape');
     stage.classList.remove('lh-probe-stage-portrait');
     stage.style.removeProperty('--lh-probe-aspect');
+    stage.style.removeProperty('--lh-fit-w');
+    stage.style.removeProperty('--lh-fit-h');
   };
   const apply=(width,height)=>{
     const w=Number(width)||0,h=Number(height)||0;
     if(!w||!h)return;
+    displayAspect=w/h;
     const portrait=h>w*1.08;
     viewer.classList.toggle('lh-probe-portrait',portrait);
     viewer.classList.toggle('lh-probe-landscape',!portrait);
     stage.classList.toggle('lh-probe-stage-portrait',portrait);
     stage.style.setProperty('--lh-probe-aspect',`${w}/${h}`);
+    if(portrait)scheduleFit();
+    else{
+      stage.style.removeProperty('--lh-fit-w');
+      stage.style.removeProperty('--lh-fit-h');
+    }
   };
   const refresh=async()=>{
     const path=currentPath();
@@ -97,8 +123,22 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
       apply(p.displayWidth||p.width,p.displayHeight||p.height);
     }catch{}
   };
+
+  // Click anywhere on the actual video stage to toggle play/pause. This works
+  // both in the normal dialog and when viewerStage itself owns fullscreen.
+  stage.classList.add('lh-click-toggle');
+  stage.addEventListener('click',e=>{
+    if(!viewer.open||!video.currentSrc)return;
+    if(e.defaultPrevented||e.target.closest?.('button,input,select,a'))return;
+    if(video.paused)video.play().catch(()=>{});else video.pause();
+  });
+
+  const ro=typeof ResizeObserver==='function'?new ResizeObserver(scheduleFit):null;
+  ro?.observe(stage);
+  document.addEventListener('fullscreenchange',scheduleFit);
+  addEventListener('resize',scheduleFit);
   new MutationObserver(()=>{clear();setTimeout(refresh,0)}).observe(pathNode,{subtree:true,childList:true,characterData:true});
-  video.addEventListener('loadedmetadata',refresh);
+  video.addEventListener('loadedmetadata',()=>{refresh();scheduleFit();});
   viewer.addEventListener('close',clear);
   refresh();
 })();
