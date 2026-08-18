@@ -117,6 +117,12 @@
   <div id="toast" class="toast"></div>
   <script src="/smart_ui.js"></script>
   <script src="/ux_enhancements.js"></script>
+  <script>
+    // LocalHub 2.3.1 bootstrap guard: v23_features replaces the rescan label with
+    // an SVG icon. Its observer only needs the disabled state; observing its own
+    // childList makes innerHTML changes recursively schedule more callbacks.
+    (()=>{const Native=window.MutationObserver;if(!Native)return;window.MutationObserver=class LocalHubMutationObserver extends Native{observe(target,options={}){if(target?.id==='rescanBtn'&&Array.isArray(options?.attributeFilter)&&options.attributeFilter.includes('disabled')){return super.observe(target,{attributes:true,attributeFilter:['disabled']});}return super.observe(target,options);}}})();
+  </script>
   <script src="/v23_features.js"></script>
   <script src="/v23_player_fix.js"></script>
   <script>
