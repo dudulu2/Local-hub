@@ -24,7 +24,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         return
 
     original_init = Manager.__init__
-    original_status = Manager.status
     original_suggestions = Manager.suggestions
     original_queue_media = Manager.queue_media
 
@@ -205,10 +204,34 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         }
 
     def status_with_siglip(self, path: str = ""):
+        # Status is polled by the player UI. It must stay O(1) over the library:
+        # never unpack every embedding or rebuild prototypes from this path.
         refresh_encoder(self)
-        payload = original_status(self, path)
-        payload["encoder"] = self.encoder.name
-        payload["semanticModel"] = self.encoder.name == ENCODER_NAME
+        encoder_name = self.encoder.name
+        index_stats = self.index.stats(encoder_name)
+        io_state = SCHEDULER.snapshot()
+        with self.lock:
+            prototype_cache = self._prototype_cache[1] if self._prototype_cache else {}
+            payload = {
+                "ok": True,
+                "encoder": encoder_name,
+                "semanticModel": encoder_name == ENCODER_NAME,
+                "libraryRunning": self.library_running,
+                "queued": self.urgent.qsize() + len(self.library),
+                "current": self.current,
+                "completed": self.completed,
+                "failed": self.failed,
+                "lastError": self.last_error,
+                "lastElapsedMs": round(self.last_elapsed_ms, 1),
+                "indexed": index_stats["media"],
+                "indexedFrames": index_stats["frames"],
+                "learnedTags": len(prototype_cache),
+                "learnedTagsCached": bool(self._prototype_cache),
+                "minPositives": auto_tag_support_module.MIN_TAG_POSITIVES,
+                "io": io_state,
+            }
+        if path:
+            payload["pathIndexed"] = self.index.has_media(path, encoder_name)
         payload["model"] = self.siglip_bundle.status()
         payload["suggestionMode"] = "siglip-zero-shot" if payload["semanticModel"] else "visual-prototype"
         if payload["semanticModel"]:
