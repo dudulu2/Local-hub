@@ -11,6 +11,9 @@ if str(ROOT) not in sys.path:
 import compat_support
 import media_probe
 
+# CI marker: this branch intentionally touches a workflow-covered file so the
+# complete Windows pipeline runs against current main playback-safety changes.
+
 
 def main() -> None:
     js = (ROOT / "playback_stability.js").read_text("utf-8")
