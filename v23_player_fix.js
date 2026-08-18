@@ -12,9 +12,53 @@
   const notice = $('#playerNotice');
   const noticeTitle = $('#playerNoticeTitle');
   const noticeText = $('#playerNoticeText');
+  const diagnostics = $('#mediaDiagnostics');
+  const pathNode = $('#viewerPath');
   const toastNode = $('#toast');
 
-  document.documentElement.dataset.interactionFix = '2.4-single-owner';
+  document.documentElement.dataset.interactionFix = '2.4-probe-failfast';
+
+  // Media diagnostics are useful, but they are never allowed to hold the player
+  // hostage. smart_ui calls the global fetch binding at request time, so this
+  // small guard gives only /api/media/probe a strict browser-side deadline.
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function localHubFetch(input, init = {}) {
+    const url = typeof input === 'string' ? input : String(input?.url || '');
+    if (!url.includes('/api/media/probe')) return nativeFetch(input, init);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    const upstream = init?.signal;
+    if (upstream) {
+      if (upstream.aborted) controller.abort();
+      else upstream.addEventListener('abort', () => controller.abort(), {once:true});
+    }
+    return nativeFetch(input, {...init, signal:controller.signal}).finally(() => clearTimeout(timer));
+  };
+
+  let diagnosticsTimer = null;
+  function armDiagnosticsDeadline() {
+    clearTimeout(diagnosticsTimer);
+    diagnosticsTimer = setTimeout(() => {
+      if (!viewer?.open) return;
+      const text = (diagnostics?.textContent || '').trim();
+      if (/正在读取媒体信息|正在获取媒体信息|诊断失败.*abort/i.test(text)) {
+        diagnostics.textContent = '媒体诊断暂未返回 · 不影响直接播放';
+      }
+      const title = (noticeTitle?.textContent || '').trim();
+      if ((video?.currentSrc || video?.src) && /正在分析媒体|正在分析/.test(title)) {
+        notice?.classList.add('hidden');
+      }
+    }, 3800);
+  }
+  if (pathNode) {
+    new MutationObserver(armDiagnosticsDeadline).observe(pathNode, {subtree:true,childList:true,characterData:true});
+  }
+  video?.addEventListener('loadedmetadata', () => {
+    const title = (noticeTitle?.textContent || '').trim();
+    if (/正在分析媒体|正在分析/.test(title)) notice?.classList.add('hidden');
+  });
+  viewer?.addEventListener('close', () => clearTimeout(diagnosticsTimer));
 
   function toast(message) {
     if (!toastNode || !message) return;
