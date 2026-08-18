@@ -8,7 +8,7 @@ from pathlib import Path
 from visual_encoder import pack_vector, unpack_vector
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class VisualIndex:
@@ -63,6 +63,18 @@ class VisualIndex:
                     value INTEGER NOT NULL,
                     at INTEGER NOT NULL,
                     PRIMARY KEY(path, tag)
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS text_vectors (
+                    tag TEXT NOT NULL,
+                    encoder TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    vector BLOB NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(tag, encoder)
                 )
                 """
             )
@@ -194,6 +206,39 @@ class VisualIndex:
                 """,
                 (path, clean, value, int(time.time() * 1000)),
             )
+
+    def text_vector(self, tag: str, encoder: str, prompt_hash: str) -> tuple[float, ...]:
+        with self.lock, self._connect() as db:
+            row = db.execute(
+                "SELECT vector,prompt_hash FROM text_vectors WHERE tag=? AND encoder=?",
+                (str(tag), str(encoder)),
+            ).fetchone()
+        if not row or row["prompt_hash"] != prompt_hash:
+            return ()
+        return unpack_vector(row["vector"])
+
+    def save_text_vector(self, tag: str, encoder: str, prompt_hash: str, vector: tuple[float, ...]) -> None:
+        if not vector:
+            return
+        with self.lock, self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO text_vectors(tag,encoder,prompt_hash,vector,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(tag,encoder) DO UPDATE SET
+                    prompt_hash=excluded.prompt_hash,
+                    vector=excluded.vector,
+                    updated_at=excluded.updated_at
+                """,
+                (str(tag), str(encoder), str(prompt_hash), pack_vector(vector), int(time.time() * 1000)),
+            )
+
+    def clear_text_vectors(self, encoder: str | None = None) -> None:
+        with self.lock, self._connect() as db:
+            if encoder:
+                db.execute("DELETE FROM text_vectors WHERE encoder=?", (str(encoder),))
+            else:
+                db.execute("DELETE FROM text_vectors")
 
     def stats(self, encoder: str | None = None) -> dict:
         with self.lock, self._connect() as db:
