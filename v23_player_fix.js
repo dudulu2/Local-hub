@@ -2,6 +2,8 @@
   'use strict';
 
   const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const video = $('#videoPlayer');
   const stage = $('#viewerStage');
   const viewer = $('#viewer');
@@ -93,6 +95,33 @@
       notice?.classList.remove('v23-passive-notice');
     }
   }
+
+  async function openRecommendationDirect(card) {
+    const id = card?.dataset.recId || '';
+    const name = (card?.querySelector('.v23-rec-title')?.textContent || '').trim();
+    if (!id || !name) return;
+    $('#closeViewer')?.click();
+    await sleep(55);
+    const input = $('#searchInput');
+    if (!input) return;
+    input.value = name;
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+    const deadline = Date.now() + 4500;
+    while (Date.now() < deadline) {
+      const target = $$('.card[data-id]').find(node => node.dataset.id === id);
+      if (target) { target.click(); return; }
+      await sleep(90);
+    }
+    toast('暂时无法打开这个推荐视频');
+  }
+
+  document.addEventListener('click', e => {
+    const card = e.target.closest?.('.v23-rec-card');
+    if (!card) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    openRecommendationDirect(card);
+  }, true);
 
   video.addEventListener('loadedmetadata', () => {
     fitFromVideo();
