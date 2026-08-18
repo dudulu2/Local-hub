@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'agent/2.2.4-alpha1-package']
     tags: ['v*']
     paths:
       - 'launcher.py'
