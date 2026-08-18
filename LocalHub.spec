@@ -23,6 +23,8 @@ a = Analysis(
         ('v23_player_fix.js', '.'),
         ('auto_tag_ui.css', '.'),
         ('auto_tag_ui.js', '.'),
+        ('playback_stability.css', '.'),
+        ('playback_stability.js', '.'),
     ] + imageio_datas,
     hiddenimports=[
         'pystray._win32',
