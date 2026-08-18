@@ -24,6 +24,8 @@ on:
       - 'move_branding.js'
       - 'v23_features.css'
       - 'v23_features.js'
+      - 'v23_player_fix.css'
+      - 'v23_player_fix.js'
       - 'LocalHub.spec'
       - 'version_info.txt'
       - 'VERSION'
@@ -52,6 +54,8 @@ on:
       - 'move_branding.js'
       - 'v23_features.css'
       - 'v23_features.js'
+      - 'v23_player_fix.css'
+      - 'v23_player_fix.js'
       - 'LocalHub.spec'
       - 'version_info.txt'
       - 'VERSION'
@@ -88,6 +92,7 @@ jobs:
           node --check .\ux_enhancements.js
           node --check .\move_branding.js
           node --check .\v23_features.js
+          node --check .\v23_player_fix.js
 
       - name: Launcher startup smoke test
         run: python tools/smoke_launcher.py
