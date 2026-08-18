@@ -2,34 +2,8 @@ name: Build Windows EXE
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    tags: ['v*']
-    paths:
-      - 'launcher.py'
-      - 'server.py'
-      - 'smart_mode.py'
-      - 'smart_thumbnail.py'
-      - 'preview_support.py'
-      - 'media_probe.py'
-      - 'compat_support.py'
-      - 'rating_support.py'
-      - 'catalog_cache.py'
-      - 'smart_index.html'
-      - 'smart_ui.css'
-      - 'smart_ui.js'
-      - 'ux_enhancements.css'
-      - 'ux_enhancements.js'
-      - 'move_branding.js'
-      - 'LocalHub.spec'
-      - 'version_info.txt'
-      - 'VERSION'
-      - 'README.md'
-      - 'RELEASE_NOTES.md'
-      - 'tools/**'
-      - '.github/workflows/build-windows.yml'
   pull_request:
-    branches: [main]
+    branches: [ci/2.2.4-alpha4.1-build-base]
     paths:
       - 'launcher.py'
       - 'server.py'
@@ -81,6 +55,8 @@ jobs:
           node --check .\smart_ui.js
           node --check .\ux_enhancements.js
           node --check .\move_branding.js
+          python -c "import pathlib,preview_support; s=preview_support._PORTRAIT_LAYOUT_SCRIPT.split('<script>',1)[1].split('</script>',1)[0]; pathlib.Path('portrait_ci.js').write_text(s,encoding='utf-8')"
+          node --check .\portrait_ci.js
 
       - name: Launcher startup smoke test
         run: python tools/smoke_launcher.py
@@ -90,6 +66,9 @@ jobs:
 
       - name: Preview extraction smoke test
         run: python tools/smoke_preview.py
+
+      - name: Playback priority smoke test
+        run: python tools/smoke_playback_priority.py
 
       - name: Media compatibility smoke test
         run: python tools/smoke_compat.py
@@ -130,33 +109,3 @@ jobs:
             dist/SHA256.txt
           if-no-files-found: error
           compression-level: 0
-
-      - name: Publish stable release from main
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release:')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $version = (Get-Content .\VERSION -Raw).Trim()
-          if (-not $version) { throw 'VERSION is empty' }
-          $tag = "v$version"
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag .\dist\LocalHub.exe .\dist\SHA256.txt --clobber
-          } else {
-            gh release create $tag .\dist\LocalHub.exe .\dist\SHA256.txt --target "${{ github.sha }}" --title "LocalHub $version" --notes-file .\RELEASE_NOTES.md
-          }
-
-      - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tag = "${{ github.ref_name }}"
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag .\dist\LocalHub.exe .\dist\SHA256.txt --clobber
-          } else {
-            gh release create $tag .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub $tag" --generate-notes
-          }
