@@ -5,6 +5,7 @@ on:
   pull_request:
     branches: [ci/2.2.4-alpha4.1-build-base]
     paths:
+      - '.ci-alpha4.1'
       - 'launcher.py'
       - 'server.py'
       - 'smart_mode.py'
