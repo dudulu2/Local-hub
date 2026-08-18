@@ -24,6 +24,8 @@ _INPUT_RE = re.compile(r"Input #0,\s*([^,\n]+(?:,[^'\n]+)?)\s*,\s*from", re.IGNO
 _VIDEO_RE = re.compile(r"Stream #\S+.*?Video:\s*([^,\s]+).*?(\d{2,5})x(\d{2,5})", re.IGNORECASE)
 _AUDIO_RE = re.compile(r"Stream #\S+.*?Audio:\s*([^,\s]+)", re.IGNORECASE)
 _FPS_RE = re.compile(r"(?:,|\s)(\d+(?:\.\d+)?)\s*fps(?:,|\s)", re.IGNORECASE)
+_ROTATION_RE = re.compile(r"rotation of\s+(-?\d+(?:\.\d+)?)\s+degrees", re.IGNORECASE)
+_ROTATE_TAG_RE = re.compile(r"rotate\s*:\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def ffmpeg_exe() -> str | None:
@@ -147,6 +149,7 @@ def probe_media(path: Path, timeout: int = 8) -> dict:
     video_match = _VIDEO_RE.search(text)
     audio_match = _AUDIO_RE.search(text)
     fps_match = _FPS_RE.search(video_match.group(0) if video_match else text)
+    rotation_match = _ROTATION_RE.search(text) or _ROTATE_TAG_RE.search(text)
 
     container = input_match.group(1).strip() if input_match else path.suffix.lower().lstrip(".")
     video_codec = video_match.group(1).lower() if video_match else ""
@@ -157,6 +160,14 @@ def probe_media(path: Path, timeout: int = 8) -> dict:
         fps = float(fps_match.group(1)) if fps_match else None
     except ValueError:
         fps = None
+    try:
+        rotation = float(rotation_match.group(1)) if rotation_match else 0.0
+    except ValueError:
+        rotation = 0.0
+    normalized_rotation = int(round(rotation / 90.0) * 90) % 360 if rotation else 0
+    display_width, display_height = width, height
+    if normalized_rotation in {90, 270}:
+        display_width, display_height = height, width
 
     strategy, compat_mode, reason = _strategy(path.suffix.lower(), video_codec, audio_codec)
     data = {
@@ -168,6 +179,9 @@ def probe_media(path: Path, timeout: int = 8) -> dict:
         "audioCodec": audio_codec or "none",
         "width": width,
         "height": height,
+        "displayWidth": display_width,
+        "displayHeight": display_height,
+        "rotation": normalized_rotation,
         "fps": fps,
         "duration": duration,
         "size": stat.st_size,
