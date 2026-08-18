@@ -94,6 +94,14 @@ class VisualIndex:
             ).fetchone()
             return row is not None
 
+    def has_media(self, path: str, encoder: str | None = None) -> bool:
+        with self.lock, self._connect() as db:
+            if encoder:
+                row = db.execute("SELECT 1 FROM media WHERE path=? AND encoder=?", (path, encoder)).fetchone()
+            else:
+                row = db.execute("SELECT 1 FROM media WHERE path=?", (path,)).fetchone()
+        return row is not None
+
     def save_media(
         self,
         path: str,
