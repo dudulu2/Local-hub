@@ -11,6 +11,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 import media_probe
+from io_scheduler import SCHEDULER
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff"}
 
@@ -143,7 +144,7 @@ def _shell_thumbnail(path: Path, size: int) -> bytes | None:
                     ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
                     ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
                     ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
-                    ("biClrImportant", wintypes.DWORD),
+                    ("biImportant", wintypes.DWORD),
                 ]
 
             class BITMAPINFO(Structure):
@@ -201,7 +202,20 @@ def _pil_thumbnail(path: Path, size: int) -> bytes | None:
         return None
 
 
-def _ffmpeg_frame(path: Path, size: int, seek: float, timeout: int = 7) -> bytes | None:
+def _terminate(process: subprocess.Popen) -> None:
+    try:
+        process.terminate()
+        process.wait(timeout=0.5)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
+def _ffmpeg_frame(path: Path, size: int, seek: float, timeout: int = 7, *, yield_to_playback: bool = True) -> bytes | None:
+    if yield_to_playback and SCHEDULER.busy():
+        return None
     exe = media_probe.ffmpeg_exe()
     if not exe:
         return None
@@ -212,21 +226,38 @@ def _ffmpeg_frame(path: Path, size: int, seek: float, timeout: int = 7) -> bytes
         "-vf", f"scale='min({size},iw)':-2",
         "-q:v", "8", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
     ]
-    kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+    kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        result = subprocess.run(command, **kwargs)
-        data = result.stdout or b""
-        return data if result.returncode == 0 and len(data) > 300 else None
-    except (OSError, subprocess.SubprocessError):
+        process = subprocess.Popen(command, **kwargs)
+    except OSError:
         return None
+    started = time.monotonic()
+    while True:
+        if yield_to_playback and SCHEDULER.busy():
+            _terminate(process)
+            return None
+        if time.monotonic() - started > timeout:
+            _terminate(process)
+            return None
+        try:
+            out, _ = process.communicate(timeout=0.12)
+            data = out or b""
+            return data if process.returncode == 0 and len(data) > 300 else None
+        except subprocess.TimeoutExpired:
+            continue
+        except Exception:
+            _terminate(process)
+            return None
 
 
 def _ffmpeg_thumbnail(path: Path, size: int) -> bytes | None:
-    data = _ffmpeg_frame(path, size, 1.0, timeout=8)
-    if data is None:
-        data = _ffmpeg_frame(path, size, 0.0, timeout=8)
+    if SCHEDULER.busy():
+        return None
+    data = _ffmpeg_frame(path, size, 1.0, timeout=8, yield_to_playback=True)
+    if data is None and not SCHEDULER.busy():
+        data = _ffmpeg_frame(path, size, 0.0, timeout=8, yield_to_playback=True)
     return data
 
 
@@ -266,8 +297,11 @@ def get_hover_frame(path: Path, slot: int = 0, size: int = 360) -> bytes | None:
 
     Six positions are distributed through the video when duration is known.
     Only one extractor may run globally, so fast mouse movement cannot fan out
-    into parallel video reads.
+    into parallel video reads. Playback/seeking can preempt an in-flight FFmpeg
+    extraction so the current video always wins disk I/O.
     """
+    if SCHEDULER.busy():
+        return None
     slot = max(0, min(len(_HOVER_RATIOS) - 1, int(slot)))
     try:
         identity = _identity(path, size)
@@ -278,10 +312,12 @@ def get_hover_frame(path: Path, slot: int = 0, size: int = 360) -> bytes | None:
     if hit is not None:
         return hit
     with _HOVER_EXTRACTOR:
+        if SCHEDULER.busy():
+            return None
         hit = _hover_cache_get(key)
         if hit is not None:
             return hit
-        data = _ffmpeg_frame(path, size, _hover_seek(path, slot), timeout=6)
+        data = _ffmpeg_frame(path, size, _hover_seek(path, slot), timeout=6, yield_to_playback=True)
         if data:
             _hover_cache_put(key, data)
         return data
