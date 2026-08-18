@@ -1,0 +1,92 @@
+name: Apply alpha4 player UI patch
+
+on:
+  push:
+    branches: [agent/2.2.4-alpha4-status-portrait]
+    paths: ['.github/workflows/alpha4-ui-patch.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/2.2.4-alpha4-status-portrait
+      - name: Patch processing status and portrait fit
+        shell: python
+        run: |
+          from pathlib import Path
+
+          js_path = Path('ux_enhancements.js')
+          js = js_path.read_text(encoding='utf-8')
+          anchor = "  new MutationObserver(()=>decorateAll()).observe(document.body,{subtree:true,childList:true});\n  watchPlayerNotice();installBlackFrameWatch();decorateAll();\n})();\n"
+          if anchor not in js:
+              raise SystemExit('ux_enhancements.js anchor not found')
+          addition = r'''  function installProcessingStatus() {
+            const notice=$('#playerNotice'),title=$('#playerNoticeTitle'),progress=$('#compatProgress'),row=$('.viewer-title-row');
+            if(!notice||!title||!row)return;
+            let status=$('#processingStatus');
+            if(!status){
+              status=document.createElement('div');status.id='processingStatus';status.className='processing-status hidden';
+              status.innerHTML='<span class="processing-status-dot"></span><span class="processing-status-label"></span>';
+              row.insertAdjacentElement('afterend',status);
+            }
+            const label=status.querySelector('.processing-status-label');
+            const sync=()=>{
+              if(notice.classList.contains('hidden')){status.classList.add('hidden');status.classList.remove('error');return;}
+              const t=(title.textContent||'').trim();let kind='';
+              if(/兼容封装/.test(t))kind='无损封装';
+              else if(/准备兼容播放|转为兼容格式|兼容转码/.test(t))kind='兼容转码';
+              else if(/兼容播放失败/.test(t))kind='处理失败';
+              else {status.classList.add('hidden');return;}
+              let pct='';const width=progress?.querySelector('i')?.style?.width||'';
+              if(/^\d+(?:\.\d+)?%$/.test(width)&&parseFloat(width)>0)pct=` ${Math.round(parseFloat(width))}%`;
+              if(label)label.textContent=kind==='处理失败'?'视频处理失败':`视频处理中 · ${kind}${pct}`;
+              status.classList.toggle('error',kind==='处理失败');status.classList.remove('hidden');
+            };
+            new MutationObserver(sync).observe(notice,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class']});
+            if(progress)new MutationObserver(sync).observe(progress,{subtree:true,attributes:true,attributeFilter:['style','class']});
+            sync();
+          }
+
+          function installPortraitFit() {
+            const video=$('#videoPlayer'),stage=$('#viewerStage'),viewer=$('#viewer');
+            if(!video||!stage)return;
+            const clear=()=>stage.classList.remove('lh-video-portrait','lh-video-landscape');
+            const fit=()=>{
+              const w=Number(video.videoWidth)||0,h=Number(video.videoHeight)||0;
+              if(!w||!h)return;
+              const portrait=h>w*1.08;
+              stage.classList.toggle('lh-video-portrait',portrait);
+              stage.classList.toggle('lh-video-landscape',!portrait);
+            };
+            video.addEventListener('loadedmetadata',fit);video.addEventListener('loadeddata',fit);video.addEventListener('resize',fit);video.addEventListener('emptied',clear);
+            viewer?.addEventListener('close',clear);fit();
+          }
+
+'''
+          js = js.replace(anchor, addition + "  new MutationObserver(()=>decorateAll()).observe(document.body,{subtree:true,childList:true});\n  watchPlayerNotice();installBlackFrameWatch();installProcessingStatus();installPortraitFit();decorateAll();\n})();\n")
+          js_path.write_text(js, encoding='utf-8')
+
+          css_path = Path('ux_enhancements.css')
+          css = css_path.read_text(encoding='utf-8')
+          start = css.index('/* The compatibility status is moved out of the video stage')
+          end = css.index('\n\n/* The old tag modal', start)
+          replacement = '''/* The legacy player notice remains for the stable player logic, but is never rendered.\n   A tiny processing line is mirrored below the video title instead. */\n.player-notice{display:none!important}\n.processing-status{margin-top:4px;min-height:14px;display:flex;align-items:center;gap:6px;color:#8b8b92;font-size:10px;line-height:1.35}\n.processing-status.hidden{display:none!important}\n.processing-status-dot{width:5px;height:5px;flex:0 0 auto;border-radius:50%;background:currentColor;animation:lh-processing-pulse 1.1s ease-in-out infinite}\n.processing-status.error{color:#c98383}\n@keyframes lh-processing-pulse{0%,100%{opacity:.28}50%{opacity:1}}\n\n/* Portrait fit is deliberately metadata-only: no probe request and no observer chain. */\n.viewer-stage{contain:layout paint}\n.viewer-stage video{display:block;object-fit:contain!important;object-position:center center!important;max-width:100%!important;max-height:100%!important}\n.viewer-stage.lh-video-portrait video{width:auto!important;height:100%!important;max-width:100%!important;max-height:100%!important}\n.viewer-stage.lh-video-landscape video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}\n@media(max-width:700px){.viewer-stage.lh-video-portrait video{width:auto!important;height:100%!important}}'''
+          css = css[:start] + replacement + css[end:]
+          css_path.write_text(css, encoding='utf-8')
+
+          Path('.github/workflows/alpha4-ui-patch.yml').unlink()
+      - name: Validate JS
+        run: node --check ux_enhancements.js
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add ux_enhancements.js ux_enhancements.css .github/workflows/alpha4-ui-patch.yml
+          git commit -m "fix: move processing status below title and fit portrait video"
+          git push origin HEAD:agent/2.2.4-alpha4-status-portrait
