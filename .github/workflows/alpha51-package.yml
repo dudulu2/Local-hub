@@ -1,0 +1,66 @@
+name: Alpha5.1 Windows package
+
+on:
+  push:
+    branches: [ci/2.2.4-alpha5.1-package]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install --upgrade pyinstaller pystray pillow imageio-ffmpeg comtypes
+      - name: Validate sources
+        shell: pwsh
+        run: |
+          python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py playback_priority.py io_scheduler.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py
+          node --check .\smart_ui.js
+          node --check .\ux_enhancements.js
+          node --check .\move_branding.js
+          node --check .\recommendation_ui.js
+          python -c "import media_probe, math; a,_,_,_=media_probe._display_aspect(1080,1920,''); assert math.isclose(a,9/16,rel_tol=1e-9); a,_,dar,_=media_probe._display_aspect(1080,1920,'SAR 1:1 DAR 9:16'); assert dar=='9:16' and math.isclose(a,9/16,rel_tol=1e-9); a,_,_,r=media_probe._display_aspect(1920,1080,'rotation of 90.00 degrees'); assert r==90.0 and math.isclose(a,9/16,rel_tol=1e-9)"
+      - name: Recommendation isolation smoke
+        run: python tools/smoke_recommendations.py
+      - name: Playback priority smoke
+        run: python tools/smoke_playback_priority.py
+      - name: Media compatibility smoke
+        run: python tools/smoke_compat.py
+      - name: Preview smoke
+        run: python tools/smoke_preview.py
+      - name: Launcher smoke
+        run: python tools/smoke_launcher.py
+      - name: Generate icon
+        run: python tools/make_icon.py
+      - name: Build one-file executable
+        run: pyinstaller --noconfirm --clean LocalHub.spec
+      - name: Packaged EXE self-test
+        shell: pwsh
+        run: |
+          $env:HTTP_PROXY = 'http://127.0.0.1:9'
+          $env:HTTPS_PROXY = 'http://127.0.0.1:9'
+          $env:ALL_PROXY = 'http://127.0.0.1:9'
+          $env:NO_PROXY = ''
+          $p = Start-Process -FilePath .\dist\LocalHub.exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub self-test failed: $($p.ExitCode)" }
+      - name: Generate SHA256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash .\dist\LocalHub.exe -Algorithm SHA256).Hash.ToLower()
+          "LocalHub.exe  $hash" | Set-Content .\dist\SHA256.txt -Encoding utf8
+          Write-Host "SHA256: $hash"
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalHub-Windows-x64
+          path: |
+            dist/LocalHub.exe
+            dist/SHA256.txt
+          if-no-files-found: error
+          compression-level: 0
