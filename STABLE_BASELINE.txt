@@ -1,0 +1,2 @@
+LocalHub stable playback baseline rebuilt from v2.2.3.
+Purpose: restore the last user-verified playback path before reworking the player architecture.
