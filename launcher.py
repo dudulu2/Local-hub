@@ -189,11 +189,14 @@ def configure_server(root: Path):
     import preview_support
     import compat_support
     import rating_support
+    import recommendation_support
 
     app_dir = Path(server.APP_DIR)
     server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
     server.STATIC_FILES["/ux_enhancements.css"] = app_dir / "ux_enhancements.css"
     server.STATIC_FILES["/move_branding.js"] = app_dir / "move_branding.js"
+    server.STATIC_FILES["/v23_features.js"] = app_dir / "v23_features.js"
+    server.STATIC_FILES["/v23_features.css"] = app_dir / "v23_features.css"
 
     rating_support.install(server, smart_mode)
     catalog_cache.cleanup_legacy_thumbnail_cache(root)
@@ -201,6 +204,7 @@ def configure_server(root: Path):
     smart_mode.install(server)
     preview_support.install(server)
     compat_support.install(server)
+    recommendation_support.install(server, smart_mode)
     cleanup_compat_cache(root)
     return server
 
@@ -219,8 +223,6 @@ def create_http_server(root: Path):
     try:
         httpd = LoggedThreadingHTTPServer((HOST, PREFERRED_PORT), handler)
     except OSError:
-        # 8787 is only a preference. Let Windows atomically choose a free port;
-        # do not probe first and introduce a bind race.
         httpd = LoggedThreadingHTTPServer((HOST, 0), handler)
     httpd.daemon_threads = True
     httpd.quiet = True
@@ -234,10 +236,13 @@ def self_test() -> int:
     try:
         import server
         import compat_support
+        import recommendation_support
         if not callable(getattr(compat_support, "install", None)):
             return 11
+        if not callable(getattr(recommendation_support, "install", None)):
+            return 12
         app_dir = Path(server.APP_DIR)
-        for name in ("smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js", "move_branding.js"):
+        for name in ("smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js", "move_branding.js", "v23_features.js", "v23_features.css"):
             if not (app_dir / name).exists():
                 return 20
 
@@ -346,10 +351,6 @@ def main() -> int:
         )
         thread.start()
 
-        # Binding succeeded synchronously above. Do not make successful startup
-        # depend on a localhost HTTP probe: corporate proxies/VPN/PAC/security
-        # software can interfere with client-side probes even while the server is
-        # perfectly healthy. A dead server thread is still a hard failure.
         time.sleep(0.12)
         if not thread.is_alive():
             raise RuntimeError("HTTP 服务线程启动后立即退出。")
