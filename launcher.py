@@ -247,6 +247,7 @@ def self_test() -> int:
         import recommendation_support
         import auto_tag_support
         import siglip_support
+        import interactive_preview_support
         if not callable(getattr(compat_support, "install", None)):
             return 11
         if not callable(getattr(recommendation_support, "install", None)):
@@ -255,10 +256,13 @@ def self_test() -> int:
             return 13
         if not callable(getattr(siglip_support, "install", None)):
             return 14
+        if not callable(getattr(interactive_preview_support, "install", None)):
+            return 15
         app_dir = Path(server.APP_DIR)
         for name in (
             "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
             "move_branding.js", "v23_features.js", "v23_features.css", "v23_player_fix.js", "v23_player_fix.css",
+            "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",
         ):
             if not (app_dir / name).exists():
                 return 20
@@ -272,8 +276,8 @@ def self_test() -> int:
             if not wait_health(base, 5.0):
                 return 30
             with local_urlopen(base + "/", timeout=3.0) as response:
-                body = response.read(4096)
-                if response.status != 200 or b"LocalHub" not in body:
+                body = response.read(8192)
+                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body:
                     return 31
             with local_urlopen(base + "/api/smart/home", timeout=5.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -288,7 +292,9 @@ def self_test() -> int:
             httpd.server_close()
             httpd = None
         return 0
-    except Exception:
+    except Exception as exc:
+        detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        write_startup_log(media_root(), "PACKAGED SELF-TEST FAILURE\n\n" + detail)
         return 99
     finally:
         if httpd is not None:
