@@ -24,6 +24,9 @@ _INPUT_RE = re.compile(r"Input #0,\s*([^,\n]+(?:,[^'\n]+)?)\s*,\s*from", re.IGNO
 _VIDEO_RE = re.compile(r"Stream #\S+.*?Video:\s*([^,\s]+).*?(\d{2,5})x(\d{2,5})", re.IGNORECASE)
 _AUDIO_RE = re.compile(r"Stream #\S+.*?Audio:\s*([^,\s]+)", re.IGNORECASE)
 _FPS_RE = re.compile(r"(?:,|\s)(\d+(?:\.\d+)?)\s*fps(?:,|\s)", re.IGNORECASE)
+_SAR_RE = re.compile(r"SAR\s+(\d+):(\d+)", re.IGNORECASE)
+_DAR_RE = re.compile(r"DAR\s+(\d+):(\d+)", re.IGNORECASE)
+_ROTATION_RE = re.compile(r"rotation(?:\s+of|\s*:)\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def ffmpeg_exe() -> str | None:
@@ -73,6 +76,54 @@ def _duration_seconds(text: str) -> float | None:
         return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
     except ValueError:
         return None
+
+
+def _ratio(match: re.Match[str] | None) -> tuple[int, int] | None:
+    if not match:
+        return None
+    try:
+        a, b = int(match.group(1)), int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+    if a <= 0 or b <= 0:
+        return None
+    return a, b
+
+
+def _display_aspect(width: int, height: int, text: str) -> tuple[float | None, str | None, str | None, float | None]:
+    """Return final display width/height ratio, honoring DAR/SAR and rotation.
+
+    `width`/`height` are coded pixels. Players such as PotPlayer may display a
+    slightly different shape when the stream declares non-square pixels, an
+    explicit DAR, or a 90-degree display matrix. LocalHub should use the same
+    presentation geometry instead of assuming coded pixels are the final shape.
+    """
+    if width <= 0 or height <= 0:
+        return None, None, None, None
+
+    sar = _ratio(_SAR_RE.search(text))
+    dar = _ratio(_DAR_RE.search(text))
+    rotation_match = _ROTATION_RE.search(text)
+    try:
+        rotation = float(rotation_match.group(1)) if rotation_match else None
+    except (TypeError, ValueError):
+        rotation = None
+
+    if dar:
+        aspect = dar[0] / dar[1]
+    elif sar:
+        aspect = (width * sar[0] / sar[1]) / height
+    else:
+        aspect = width / height
+
+    if rotation is not None:
+        normalized = abs(rotation) % 180.0
+        if 45.0 <= normalized <= 135.0 and aspect > 0:
+            aspect = 1.0 / aspect
+
+    sar_text = f"{sar[0]}:{sar[1]}" if sar else None
+    dar_text = f"{dar[0]}:{dar[1]}" if dar else None
+    return aspect if aspect > 0 else None, sar_text, dar_text, rotation
 
 
 def _strategy(ext: str, video_codec: str, audio_codec: str) -> tuple[str, str, str]:
@@ -153,6 +204,7 @@ def probe_media(path: Path, timeout: int = 8) -> dict:
     audio_codec = audio_match.group(1).lower() if audio_match else ""
     width = int(video_match.group(2)) if video_match else 0
     height = int(video_match.group(3)) if video_match else 0
+    display_aspect, sar, dar, rotation = _display_aspect(width, height, text)
     try:
         fps = float(fps_match.group(1)) if fps_match else None
     except ValueError:
@@ -168,6 +220,10 @@ def probe_media(path: Path, timeout: int = 8) -> dict:
         "audioCodec": audio_codec or "none",
         "width": width,
         "height": height,
+        "displayAspect": display_aspect,
+        "sampleAspect": sar,
+        "declaredDisplayAspect": dar,
+        "rotation": rotation,
         "fps": fps,
         "duration": duration,
         "size": stat.st_size,
