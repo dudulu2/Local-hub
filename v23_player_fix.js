@@ -3,177 +3,41 @@
 
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const video = $('#videoPlayer');
-  const stage = $('#viewerStage');
+  const seekBar = $('#seekBar');
+  const currentTime = $('#currentTime');
+  const durationTime = $('#durationTime');
   const viewer = $('#viewer');
-  const pathNode = $('#viewerPath');
+  const compatBtn = $('#compatBtn');
   const notice = $('#playerNotice');
   const noticeTitle = $('#playerNoticeTitle');
   const noticeText = $('#playerNoticeText');
-  const progress = $('#compatProgress');
-  const mode = $('#playMode');
   const toastNode = $('#toast');
-  if (!video || !stage || !viewer || !mode) return;
 
-  let probeToken = 0;
-  let lastPassive = '';
+  document.documentElement.dataset.interactionFix = '2.4-single-owner';
 
   function toast(message) {
     if (!toastNode || !message) return;
     toastNode.textContent = message;
     toastNode.classList.add('show');
     clearTimeout(toast.t);
-    toast.t = setTimeout(() => toastNode.classList.remove('show'), 2200);
+    toast.t = setTimeout(() => toastNode.classList.remove('show'), 1800);
   }
 
-  function setOrientation(width, height, rotation = 0) {
-    width = Number(width) || 0;
-    height = Number(height) || 0;
-    const r = Math.abs(Math.round(Number(rotation) || 0)) % 180;
-    if (r === 90) [width, height] = [height, width];
-    if (!width || !height) return;
-    const portrait = height > width * 1.08;
-    stage.classList.toggle('v23-video-portrait', portrait);
-    stage.classList.toggle('v23-video-landscape', !portrait);
-    stage.style.setProperty('--v23-video-ratio', `${width} / ${height}`);
-  }
-
-  function fitFromVideo() {
-    if (video.videoWidth && video.videoHeight) setOrientation(video.videoWidth, video.videoHeight, 0);
-  }
-
-  async function fitFromProbe() {
-    const path = (pathNode?.textContent || '').trim();
-    if (!path) return;
-    const token = ++probeToken;
-    try {
-      const r = await fetch(`/api/media/probe?path=${encodeURIComponent(path)}`, {cache:'no-store'});
-      if (!r.ok) return;
-      const data = await r.json();
-      if (token !== probeToken || !viewer.open || (pathNode?.textContent || '').trim() !== path) return;
-      const p = data.probe || {};
-      setOrientation(p.displayWidth || p.width, p.displayHeight || p.height, p.rotation || 0);
-    } catch {}
-  }
-
-  function passiveLabel(title, text) {
-    if (/准备兼容封装|正在准备兼容封装/.test(title)) return '正在无损封装';
-    if (/兼容封装/.test(title)) return '正在无损封装';
-    if (/准备兼容播放|正在准备兼容播放/.test(title)) return '正在准备兼容播放';
-    if (/正在转为兼容格式|正在转/.test(title)) return '正在兼容转码';
-    if (/正在分析媒体|正在分析/.test(title)) return '分析媒体';
-    if (/兼容播放失败/.test(title)) return '兼容失败';
-    if (/兼容/.test(text) && /准备|转码|封装/.test(text)) return '兼容处理中';
-    return '';
-  }
-
-  function mirrorPassiveNotice() {
-    if (!notice || notice.classList.contains('hidden')) return;
-    const title = (noticeTitle?.textContent || '').trim();
-    const text = (noticeText?.textContent || '').trim();
-    const label = passiveLabel(title, text);
-    if (!label) return;
-
-    let pct = '';
-    const bar = progress?.querySelector('i');
-    const width = bar?.style.width || '';
-    if (/^\d+(?:\.\d+)?%$/.test(width) && width !== '0%') pct = ` ${Math.round(parseFloat(width))}%`;
-    mode.textContent = label + pct;
-    mode.classList.add('v23-mode-busy');
-    mode.classList.toggle('v23-mode-error', label === '兼容失败');
-    notice.classList.add('v23-passive-notice');
-
-    if (label === '兼容失败' && lastPassive !== `${title}|${text}`) toast(text || title);
-    lastPassive = `${title}|${text}`;
-  }
-
-  function clearBusyWhenSettled() {
-    const text = (mode.textContent || '').trim();
-    if (/^(原生|兼容封装|兼容转码)$/.test(text)) {
-      mode.classList.remove('v23-mode-busy','v23-mode-error');
-      notice?.classList.remove('v23-passive-notice');
-    }
-  }
-
-  async function openRecommendationDirect(card) {
-    const id = card?.dataset.recId || '';
-    const name = (card?.querySelector('.v23-rec-title')?.textContent || '').trim();
-    if (!id || !name) return;
-    $('#closeViewer')?.click();
-    await sleep(55);
-    const input = $('#searchInput');
-    if (!input) return;
-    input.value = name;
-    input.dispatchEvent(new Event('input',{bubbles:true}));
-    const deadline = Date.now() + 4500;
-    while (Date.now() < deadline) {
-      const target = $$('.card[data-id]').find(node => node.dataset.id === id);
-      if (target) { target.click(); return; }
-      await sleep(90);
-    }
-    toast('暂时无法打开这个推荐视频');
-  }
-
-  document.addEventListener('click', e => {
-    const card = e.target.closest?.('.v23-rec-card');
-    if (!card) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    openRecommendationDirect(card);
-  }, true);
-
-  video.addEventListener('loadedmetadata', () => {
-    fitFromVideo();
-    requestAnimationFrame(fitFromVideo);
-  });
-  video.addEventListener('loadeddata', fitFromVideo);
-  video.addEventListener('resize', fitFromVideo);
-
-  if (pathNode) {
-    new MutationObserver(() => {
-      stage.classList.remove('v23-video-portrait','v23-video-landscape');
-      fitFromProbe();
-    }).observe(pathNode, {subtree:true,childList:true,characterData:true});
-  }
-  if (notice) new MutationObserver(mirrorPassiveNotice).observe(notice, {subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','style']});
-  if (progress) new MutationObserver(mirrorPassiveNotice).observe(progress, {subtree:true,attributes:true,attributeFilter:['style','class']});
-  new MutationObserver(clearBusyWhenSettled).observe(mode, {subtree:true,childList:true,characterData:true});
-  viewer.addEventListener('close', () => {
-    probeToken++;
-    stage.classList.remove('v23-video-portrait','v23-video-landscape');
-    notice?.classList.remove('v23-passive-notice');
-    mode.classList.remove('v23-mode-busy','v23-mode-error');
-  });
-
-  fitFromProbe();
-})();
-
-(() => {
-  'use strict';
-
-  const $ = s => document.querySelector(s);
-  const $$ = s => [...document.querySelectorAll(s)];
-  const toast = message => {
-    const node = $('#toast');
-    if (!node || !message) return;
-    node.textContent = message;
-    node.classList.add('show');
-    clearTimeout(toast.t);
-    toast.t = setTimeout(() => node.classList.remove('show'), 1800);
-  };
-  const api = async (url, opt = {}) => {
+  async function api(url, opt = {}) {
     const response = await fetch(url, {cache:'no-store', ...opt});
     let data = {};
     try { data = await response.json(); } catch {}
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     return data;
-  };
+  }
 
-  document.documentElement.dataset.interactionFix = '2.3.2';
-
-  // Native browser image dragging was racing LocalHub's pointer drag. Disable it
-  // and intercept pointer events at window-capture before the old document drag.
+  // -----------------------------------------------------------------------
+  // One drag implementation only.
+  // v23_features has an older document-level drag handler. These window-capture
+  // handlers intercept video-card pointer events before that legacy handler so
+  // only this cleaned-up state machine runs.
+  // -----------------------------------------------------------------------
   let armedDrag = null;
   let suppressClickUntil = 0;
 
@@ -292,7 +156,6 @@
       migrateLocalState(path, moved.new);
       card?.remove();
       toast(`已移动到 ${folder || '根目录'}`);
-      // Do the index refresh only after the drag UI is gone and responsive.
       api('/api/smart/rescan').then(() => {
         const activeFolder = $('.folder-nav button.active');
         const activeRoute = $('.main-nav button.active');
@@ -318,7 +181,7 @@
       active: false,
       target: null,
       ghost: null,
-      timer: null
+      timer: null,
     };
     armedDrag = state;
     const delay = state.pointerType === 'touch' ? 360 : 180;
@@ -332,7 +195,7 @@
     const distance = Math.hypot(event.clientX - state.startX, event.clientY - state.startY);
     if (!state.active) {
       if (state.pointerType === 'touch') {
-        if (distance > 12) { cleanDrag(state, false); return; }
+        if (distance > 12) cleanDrag(state, false);
         return;
       }
       if (distance > 6) activateDrag(state, event.clientX, event.clientY);
@@ -355,13 +218,12 @@
 
   const cancelActiveDrag = () => {
     const state = armedDrag;
-    if (!state) return;
-    cleanDrag(state, !!state.active);
+    if (state) cleanDrag(state, !!state.active);
   };
   window.addEventListener('pointercancel', cancelActiveDrag, true);
   window.addEventListener('blur', cancelActiveDrag);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cancelActiveDrag(); });
-  window.addEventListener('keydown', event => { if (event.key === 'Escape' && armedDrag) cancelActiveDrag(); }, true);
+  window.addEventListener('keydown', event => { if (event.key === 'Escape') cancelActiveDrag(); }, true);
   window.addEventListener('click', event => {
     if (Date.now() < suppressClickUntil) {
       event.preventDefault();
@@ -369,23 +231,16 @@
     }
   }, true);
 
-  // Timeline scrubbing: the thumb may emit dozens of input events per second.
-  // Only paint a lightweight preview while dragging and perform one actual seek
-  // after release. This also bypasses the old 650 ms false-positive compat switch.
-  const video = $('#videoPlayer');
-  const seekBar = $('#seekBar');
-  const currentTime = $('#currentTime');
-  const durationTime = $('#durationTime');
-  const compatBtn = $('#compatBtn');
-  const playMode = $('#playMode');
-  const viewer = $('#viewer');
+  // -----------------------------------------------------------------------
+  // Timeline scrubbing: UI-only while dragging, exactly one real seek on commit.
+  // Failure is surfaced to the user; it NEVER starts hidden transcoding.
+  // -----------------------------------------------------------------------
   if (!video || !seekBar || !currentTime) return;
 
   let scrubbing = false;
   let scrubValue = Number(seekBar.value) || 0;
   let seekGeneration = 0;
   let seekCleanup = null;
-  let lastPreview = '';
   let lastCommitAt = 0;
   let lastCommitTarget = -1;
 
@@ -416,11 +271,7 @@
   }
 
   function paintScrubPreview() {
-    const label = formatClock(scrubTarget());
-    if (label !== lastPreview && currentTime.textContent !== label) currentTime.textContent = label;
-    lastPreview = label;
-    const value = String(Math.round(scrubValue));
-    if (String(seekBar.value) !== value) seekBar.value = value;
+    currentTime.textContent = formatClock(scrubTarget());
   }
 
   function cancelSeekMonitor() {
@@ -428,14 +279,13 @@
     if (seekCleanup) { seekCleanup(); seekCleanup = null; }
   }
 
-  function isCompatMode() {
-    return playMode?.classList.contains('compat') || /兼容/.test(playMode?.textContent || '');
-  }
-
-  function autoCompat(reason) {
-    if (!viewer?.open || !compatBtn || compatBtn.disabled || isCompatMode()) return;
-    toast(`原生拖动失败，正在自动兼容播放${reason ? ` · ${reason}` : ''}`);
-    compatBtn.click();
+  function recommendCompat(reason) {
+    if (!viewer?.open) return;
+    compatBtn?.classList.add('recommended');
+    if (noticeTitle) noticeTitle.textContent = '当前文件定位不稳定';
+    if (noticeText) noticeText.textContent = `${reason}。可以手动选择“兼容播放”或系统播放器。`;
+    notice?.classList.remove('hidden');
+    toast('当前视频定位不稳定');
   }
 
   function monitorSeek(target) {
@@ -453,12 +303,12 @@
       if (generation !== seekGeneration) return cleanup();
       const delta = Math.abs((video.currentTime || 0) - target);
       cleanup(); seekCleanup = null;
-      if (!isCompatMode() && delta > tolerance) autoCompat('定位偏差过大');
+      if (delta > tolerance) recommendCompat('浏览器实际定位位置与目标偏差较大');
     };
     const onError = () => {
       if (generation !== seekGeneration) return cleanup();
       cleanup(); seekCleanup = null;
-      autoCompat('浏览器解码失败');
+      recommendCompat('浏览器在定位时发生解码错误');
     };
     video.addEventListener('seeked', onSeeked);
     video.addEventListener('error', onError);
@@ -466,7 +316,7 @@
       if (generation !== seekGeneration) return;
       const stillStuck = video.seeking || (video.readyState < 2 && !video.paused);
       cleanup(); seekCleanup = null;
-      if (!isCompatMode() && stillStuck) autoCompat('定位超时');
+      if (stillStuck) recommendCompat('浏览器定位超过 8 秒仍未完成');
     }, 8000);
     seekCleanup = cleanup;
   }
@@ -478,20 +328,21 @@
     const now = performance.now();
     scrubbing = false;
     if (Math.abs(target - lastCommitTarget) < 0.05 && now - lastCommitAt < 300) return;
-    lastCommitTarget = target; lastCommitAt = now;
+    lastCommitTarget = target;
+    lastCommitAt = now;
     try {
       video.currentTime = target;
       monitorSeek(target);
     } catch {
-      autoCompat('浏览器拒绝定位');
+      recommendCompat('浏览器拒绝定位到这个时间点');
     }
   }
 
   window.addEventListener('pointerdown', event => {
     if (event.target !== seekBar) return;
+    event.stopPropagation();
     scrubbing = true;
     scrubValue = Number(seekBar.value) || 0;
-    lastPreview = '';
   }, true);
 
   window.addEventListener('input', event => {
@@ -517,9 +368,10 @@
     setTimeout(() => { if (scrubbing) commitSeek(); }, 0);
   }, true);
 
-  video.addEventListener('timeupdate', () => {
-    if (scrubbing) paintScrubPreview();
-  });
   video.addEventListener('loadedmetadata', cancelSeekMonitor);
-  viewer?.addEventListener('close', () => { scrubbing = false; cancelSeekMonitor(); });
+  viewer?.addEventListener('close', () => {
+    scrubbing = false;
+    cancelSeekMonitor();
+    cancelActiveDrag();
+  });
 })();
