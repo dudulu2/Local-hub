@@ -20,11 +20,13 @@ jobs:
       - name: Validate sources
         shell: pwsh
         run: |
-          python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py playback_priority.py io_scheduler.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py tools/smoke_recommendations.py tools/smoke_exact_fit.py
+          python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py playback_priority.py io_scheduler.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py tools/smoke_recommendations.py tools/smoke_exact_fit.py tools/smoke_release.py
           node --check .\smart_ui.js
           node --check .\ux_enhancements.js
           node --check .\move_branding.js
           node --check .\recommendation_ui.js
+      - name: Release metadata smoke test
+        run: python tools/smoke_release.py
       - name: Recommendation isolation smoke test
         run: python tools/smoke_recommendations.py
       - name: Unified exact-fit smoke test
