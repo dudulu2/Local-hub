@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'agent/2.2.4-alpha3-faststart-build']
     tags: ['v*']
     paths:
       - 'launcher.py'
@@ -11,6 +11,8 @@ on:
       - 'smart_mode.py'
       - 'smart_thumbnail.py'
       - 'preview_support.py'
+      - 'playback_priority.py'
+      - 'io_scheduler.py'
       - 'media_probe.py'
       - 'compat_support.py'
       - 'rating_support.py'
@@ -36,6 +38,8 @@ on:
       - 'smart_mode.py'
       - 'smart_thumbnail.py'
       - 'preview_support.py'
+      - 'playback_priority.py'
+      - 'io_scheduler.py'
       - 'media_probe.py'
       - 'compat_support.py'
       - 'rating_support.py'
@@ -73,7 +77,7 @@ jobs:
         run: python -m pip install --upgrade pyinstaller pystray pillow imageio-ffmpeg comtypes
 
       - name: Validate Python
-        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py media_probe.py compat_support.py rating_support.py catalog_cache.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py
+        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py playback_priority.py io_scheduler.py media_probe.py compat_support.py rating_support.py catalog_cache.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_playback_priority.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py
 
       - name: Validate frontend JavaScript
         shell: pwsh
@@ -90,6 +94,9 @@ jobs:
 
       - name: Preview extraction smoke test
         run: python tools/smoke_preview.py
+
+      - name: Playback priority smoke test
+        run: python tools/smoke_playback_priority.py
 
       - name: Media compatibility smoke test
         run: python tools/smoke_compat.py
