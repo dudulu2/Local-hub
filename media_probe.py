@@ -18,11 +18,12 @@ _CACHE_LOCK = threading.RLock()
 _CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _CACHE_MAX = 96
 _CACHE_TTL = 900.0
-# The player, orientation patch, hover code and Auto Tag may ask for the same
-# metadata at nearly the same time. Serialize the expensive FFmpeg probe and
-# re-check the cache after acquiring the slot so duplicate requests collapse to
-# one disk read instead of spawning several FFmpeg processes.
+# Probing is intentionally serialized to protect disk I/O, but callers must
+# never wait forever for this slot. Hover previews and compatibility checks may
+# already be using it when the user opens the player.
 _PROBE_EXECUTOR = threading.BoundedSemaphore(1)
+_DEFAULT_PROBE_TIMEOUT = 4.0
+_DEFAULT_WAIT_TIMEOUT = 0.75
 
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _INPUT_RE = re.compile(r"Input #0,\s*([^,\n]+(?:,[^'\n]+)?)\s*,\s*from", re.IGNORECASE)
@@ -81,6 +82,25 @@ def _cache_put(key: str, data: dict) -> None:
         _CACHE.move_to_end(key)
         while len(_CACHE) > _CACHE_MAX:
             _CACHE.popitem(last=False)
+
+
+def _transient_failure(path: Path, stat, message: str, *, busy: bool = False) -> dict:
+    # Do NOT cache transient busy/timeout failures. Otherwise one unlucky hover
+    # can make the same video look unsupported for the whole cache TTL.
+    return {
+        "ok": False,
+        "error": message,
+        "ext": path.suffix.lower().lstrip("."),
+        "size": stat.st_size,
+        "browserSafe": False,
+        "timelineRisk": True,
+        "riskReasons": ["媒体探测繁忙" if busy else "媒体探测超时或失败"],
+        "strategy": "unsupported",
+        "compatMode": "transcode",
+        "reason": message,
+        "probeBusy": bool(busy),
+        "probeTransient": True,
+    }
 
 
 def _duration_seconds(text: str) -> float | None:
@@ -175,7 +195,7 @@ def _strategy(
     return "compat", "transcode", f"{video_codec or '未知编码'} 建议转换为 H.264/AAC 后播放"
 
 
-def _probe_uncached(path: Path, stat, timeout: int, key: str) -> dict:
+def _probe_uncached(path: Path, stat, timeout: float, key: str) -> dict:
     exe = ffmpeg_exe()
     if not exe:
         data = {
@@ -207,7 +227,7 @@ def _probe_uncached(path: Path, stat, timeout: int, key: str) -> dict:
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",
-        timeout=timeout,
+        timeout=max(0.5, float(timeout)),
         check=False,
     )
     if os.name == "nt":
@@ -219,21 +239,10 @@ def _probe_uncached(path: Path, stat, timeout: int, key: str) -> dict:
     try:
         result = subprocess.run(command, **kwargs)
         text = result.stderr or ""
+    except subprocess.TimeoutExpired:
+        return _transient_failure(path, stat, f"媒体信息读取超过 {float(timeout):.1f} 秒，已停止探测")
     except (OSError, subprocess.SubprocessError) as exc:
-        data = {
-            "ok": False,
-            "error": str(exc),
-            "ext": path.suffix.lower().lstrip("."),
-            "size": stat.st_size,
-            "browserSafe": False,
-            "timelineRisk": True,
-            "riskReasons": ["媒体探测超时或失败"],
-            "strategy": "unsupported",
-            "compatMode": "transcode",
-            "reason": "媒体信息无法可靠读取，禁止直接交给浏览器解码",
-        }
-        _cache_put(key, data)
-        return data
+        return _transient_failure(path, stat, str(exc))
 
     duration = _duration_seconds(text)
     input_match = _INPUT_RE.search(text)
@@ -325,7 +334,7 @@ def _probe_uncached(path: Path, stat, timeout: int, key: str) -> dict:
     return data
 
 
-def probe_media(path: Path, timeout: int = 7) -> dict:
+def probe_media(path: Path, timeout: float = _DEFAULT_PROBE_TIMEOUT, wait_timeout: float = _DEFAULT_WAIT_TIMEOUT) -> dict:
     try:
         key = _identity(path)
         stat = path.stat()
@@ -336,11 +345,16 @@ def probe_media(path: Path, timeout: int = 7) -> dict:
     if cached is not None:
         return cached
 
-    with _PROBE_EXECUTOR:
+    acquired = _PROBE_EXECUTOR.acquire(timeout=max(0.05, float(wait_timeout)))
+    if not acquired:
+        return _transient_failure(path, stat, "媒体探测正在被其他任务占用，播放不应等待它", busy=True)
+    try:
         cached = _cache_get(key)
         if cached is not None:
             return cached
         return _probe_uncached(path, stat, timeout, key)
+    finally:
+        _PROBE_EXECUTOR.release()
 
 
 def clear_probe_cache() -> None:
