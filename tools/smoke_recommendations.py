@@ -57,11 +57,28 @@ def main() -> None:
     assert 'people/alice_walk_01.mp4' not in ids
     assert len(ids) == len(set(ids))
     assert elapsed < 1500, elapsed
+    assert result[0]['thumb'].startswith('/api/recommend/thumb?path='), result[0]['thumb']
 
     recent = {'people/alice_walk_02.mp4': {'at': int(time.time() * 1000)}}
     result2 = engine.recommend('people/alice_walk_01.mp4', recent, {}, set(), 6)
     assert result2 and result2[0]['id'] != 'people/alice_walk_02.mp4', result2[:2]
     assert engine.recommend('missing.mp4', {}, {}, set(), 6) == []
+
+    # A recommendation cover must be able to reuse the existing memory cache
+    # without asking Windows Shell or FFmpeg for new work.
+    thumb = recommendation_support.smart_thumbnail
+    original_identity = thumb._identity
+    original_cache_get = thumb._cache_get
+    original_shell = thumb._shell_thumbnail
+    try:
+        thumb._identity = lambda path, size: 'cached-key'
+        thumb._cache_get = lambda key: b'cached-jpeg'
+        thumb._shell_thumbnail = lambda path, size: (_ for _ in ()).throw(AssertionError('shell should not run for a cache hit'))
+        assert recommendation_support._lightweight_thumb(Path('dummy.mp4')) == b'cached-jpeg'
+    finally:
+        thumb._identity = original_identity
+        thumb._cache_get = original_cache_get
+        thumb._shell_thumbnail = original_shell
 
     print(f'recommendation isolation smoke test passed ({elapsed:.1f} ms)')
 
