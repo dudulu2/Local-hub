@@ -49,6 +49,60 @@ _PLAYBACK_PRIORITY_SCRIPT = r"""
 </script>
 """
 
+_PORTRAIT_LAYOUT_SCRIPT = r"""
+<style>
+.viewer.lh-probe-portrait{width:min(720px,94vw)!important;height:min(96vh,1040px)!important}
+.viewer.lh-probe-portrait .player-shell{height:calc(100% - 164px)!important}
+.viewer.lh-probe-portrait .viewer-stage{min-height:0!important}
+.viewer.lh-probe-portrait .viewer-stage video{width:auto!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important}
+.viewer.lh-probe-landscape .viewer-stage video{width:100%!important;height:100%!important;object-fit:contain!important;object-position:center center!important}
+@media(max-width:760px){.viewer.lh-probe-portrait{width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0!important}.viewer.lh-probe-portrait .player-shell{height:calc(100% - 160px)!important}}
+</style>
+<script>
+(()=>{
+  const viewer=document.querySelector('#viewer');
+  const stage=document.querySelector('#viewerStage');
+  const video=document.querySelector('#videoPlayer');
+  const pathNode=document.querySelector('#viewerPath');
+  if(!viewer||!stage||!video||!pathNode)return;
+  let token=0;
+  const currentPath=()=>String(pathNode.textContent||'').trim();
+  const clear=()=>{
+    token++;
+    viewer.classList.remove('lh-probe-portrait','lh-probe-landscape');
+    stage.classList.remove('lh-probe-stage-portrait');
+    stage.style.removeProperty('--lh-probe-aspect');
+  };
+  const apply=(width,height)=>{
+    const w=Number(width)||0,h=Number(height)||0;
+    if(!w||!h)return;
+    const portrait=h>w*1.08;
+    viewer.classList.toggle('lh-probe-portrait',portrait);
+    viewer.classList.toggle('lh-probe-landscape',!portrait);
+    stage.classList.toggle('lh-probe-stage-portrait',portrait);
+    stage.style.setProperty('--lh-probe-aspect',`${w}/${h}`);
+  };
+  const refresh=async()=>{
+    const path=currentPath();
+    const mine=++token;
+    if(!path)return;
+    try{
+      const response=await fetch(`/api/media/probe?path=${encodeURIComponent(path)}`,{cache:'no-store'});
+      if(!response.ok)return;
+      const data=await response.json();
+      if(mine!==token||!viewer.open||currentPath()!==path)return;
+      const p=data.probe||{};
+      apply(p.displayWidth||p.width,p.displayHeight||p.height);
+    }catch{}
+  };
+  new MutationObserver(()=>{clear();setTimeout(refresh,0)}).observe(pathNode,{subtree:true,childList:true,characterData:true});
+  video.addEventListener('loadedmetadata',refresh);
+  viewer.addEventListener('close',clear);
+  refresh();
+})();
+</script>
+"""
+
 
 def install(server_module) -> None:
     """Add low-cost preview endpoints and playback-first scheduling."""
@@ -86,10 +140,11 @@ def install(server_module) -> None:
                     except OSError:
                         self.send_error(HTTPStatus.NOT_FOUND)
                         return
+                    injected = _PLAYBACK_PRIORITY_SCRIPT + _PORTRAIT_LAYOUT_SCRIPT
                     if "</body>" in html:
-                        html = html.replace("</body>", _PLAYBACK_PRIORITY_SCRIPT + "\n</body>", 1)
+                        html = html.replace("</body>", injected + "\n</body>", 1)
                     else:
-                        html += _PLAYBACK_PRIORITY_SCRIPT
+                        html += injected
                     raw = html.encode("utf-8")
                     self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(raw), {"Cache-Control": "no-cache"})
                     self.wfile.write(raw)
