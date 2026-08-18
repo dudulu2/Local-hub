@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import statistics
+import threading
 import urllib.parse
 from http import HTTPStatus
+from pathlib import Path
 
 from auto_tag_prompts import DEFAULT_TAG_PROMPTS
+from io_scheduler import SCHEDULER
 from siglip_encoder import ENCODER_NAME, SiglipModelBundle, SiglipOnnxEncoder
-from visual_encoder import cosine
+from visual_encoder import cosine, mean_vector
 
 
 def _prompt_hash(prompts: tuple[str, ...]) -> str:
@@ -30,27 +33,21 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         self.siglip_bundle = SiglipModelBundle(store.root)
         self.siglip_encoder = SiglipOnnxEncoder(self.siglip_bundle)
         self._siglip_prompt_cache = None
+        self._siglip_prompt_lock = threading.RLock()
+        self._siglip_warmup_running = False
         if self.siglip_encoder.ready():
             self.encoder = self.siglip_encoder
+            start_prompt_warmup(self)
 
     def refresh_encoder(self):
         if self.siglip_encoder.ready() and self.encoder.name != ENCODER_NAME:
-            try:
-                self.encoder.unload_all()
-            except Exception:
-                pass
             self.encoder = self.siglip_encoder
             self.invalidate_prototypes()
             self._siglip_prompt_cache = None
+            start_prompt_warmup(self)
         return self.encoder
 
-    def prompt_vectors(self):
-        refresh_encoder(self)
-        if self.encoder.name != ENCODER_NAME:
-            return {}
-        if self._siglip_prompt_cache is not None:
-            return self._siglip_prompt_cache
-
+    def cached_prompt_vectors(self):
         result = {}
         missing: list[tuple[str, tuple[str, ...], str]] = []
         for tag, prompts in DEFAULT_TAG_PROMPTS.items():
@@ -60,20 +57,71 @@ def _install_manager_patch(auto_tag_support_module) -> None:
                 result[tag] = cached
             else:
                 missing.append((tag, prompts, fingerprint))
+        return result, missing
 
+    def build_prompt_vectors(self):
+        refresh_encoder(self)
+        if self.encoder.name != ENCODER_NAME:
+            return {}
+        with self._siglip_prompt_lock:
+            if self._siglip_prompt_cache is not None:
+                return self._siglip_prompt_cache
+            result, missing = cached_prompt_vectors(self)
+            if not missing:
+                self._siglip_prompt_cache = result
+                return result
+            # Never load the ~111 MB text tower or run text inference while a
+            # video is playing/seeking. Suggestions can wait; playback cannot.
+            if SCHEDULER.busy():
+                return result
+
+            flat_prompts: list[str] = []
+            group_sizes: list[int] = []
+            for _, prompts, _ in missing:
+                flat_prompts.extend(prompts)
+                group_sizes.append(len(prompts))
+            try:
+                encoded = self.siglip_encoder.encode_texts(flat_prompts, batch_size=16)
+                cursor = 0
+                for (tag, _, fingerprint), count in zip(missing, group_sizes):
+                    group = encoded[cursor : cursor + count]
+                    cursor += count
+                    vector = mean_vector(group)
+                    if vector:
+                        self.index.save_text_vector(tag, ENCODER_NAME, fingerprint, vector)
+                        result[tag] = vector
+            finally:
+                # Text vectors are tiny and live in visual-index.db; the text
+                # ONNX session is intentionally released immediately.
+                self.siglip_encoder.unload_text()
+            self._siglip_prompt_cache = result
+            return result
+
+    def warmup_worker(self):
         try:
-            for tag, prompts, fingerprint in missing:
-                vector = self.siglip_encoder.encode_prompt_group(prompts)
-                if vector:
-                    self.index.save_text_vector(tag, ENCODER_NAME, fingerprint, vector)
-                    result[tag] = vector
+            if not SCHEDULER.wait_background_idle(self.stop, grace=4.0):
+                return
+            build_prompt_vectors(self)
+        except Exception as exc:
+            with self.lock:
+                self.last_error = f"SigLIP Prompt: {exc}"
         finally:
-            # The text tower is ~111 MB on disk and is only needed when prompts
-            # change. Release its session immediately after vectors are cached.
-            self.siglip_encoder.unload_text()
+            with self._siglip_prompt_lock:
+                self._siglip_warmup_running = False
 
-        self._siglip_prompt_cache = result
-        return result
+    def start_prompt_warmup(self):
+        if not self.siglip_encoder.ready():
+            return
+        _, missing = cached_prompt_vectors(self)
+        if not missing:
+            if self._siglip_prompt_cache is None:
+                self._siglip_prompt_cache = {tag: self.index.text_vector(tag, ENCODER_NAME, _prompt_hash(prompts)) for tag, prompts in DEFAULT_TAG_PROMPTS.items()}
+            return
+        with self._siglip_prompt_lock:
+            if self._siglip_warmup_running:
+                return
+            self._siglip_warmup_running = True
+        threading.Thread(target=lambda: warmup_worker(self), name="LocalHubSiglipPrompts", daemon=True).start()
 
     def semantic_suggestions(self, path: str, limit: int = 6) -> dict:
         refresh_encoder(self)
@@ -88,7 +136,9 @@ def _install_manager_patch(auto_tag_support_module) -> None:
             frame_vectors = [vector]
         existing = {tag.casefold() for tag in self.store.tags_for(path)}
         feedback = {key.casefold(): value for key, value in self.index.feedback_for(path).items()}
-        text_vectors = prompt_vectors(self)
+        text_vectors = build_prompt_vectors(self)
+        if len(text_vectors) < len(DEFAULT_TAG_PROMPTS):
+            start_prompt_warmup(self)
         prototypes = self._prototypes()
         items = []
 
@@ -118,10 +168,11 @@ def _install_manager_patch(auto_tag_support_module) -> None:
                 }
             )
 
-        # User-specific tags that are not part of the fixed zero-shot prompt set
-        # can still be learned from confirmed positive examples.
+        semantic_keys = {tag.casefold() for tag in text_vectors}
+        # User-specific tags outside the fixed zero-shot vocabulary can still be
+        # learned from confirmed positive examples.
         for key, row in prototypes.items():
-            if key in existing or feedback.get(key) == -1 or row["tag"] in text_vectors:
+            if key in existing or feedback.get(key) == -1 or key in semantic_keys:
                 continue
             score = cosine(vector, row["prototype"])
             threshold = float(row["threshold"])
@@ -142,7 +193,15 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         # These are ranking scores, not calibrated probabilities. v1 never
         # auto-writes tags; the user confirms or rejects suggestions.
         items.sort(key=lambda row: row["score"], reverse=True)
-        return {"ready": True, "items": items[: max(1, min(10, int(limit)))], "reason": "", "calibrated": False}
+        reason = "prompts-warming" if len(text_vectors) < len(DEFAULT_TAG_PROMPTS) else ""
+        return {
+            "ready": True,
+            "items": items[: max(1, min(10, int(limit)))],
+            "reason": reason,
+            "calibrated": False,
+            "promptVectors": len(text_vectors),
+            "promptTarget": len(DEFAULT_TAG_PROMPTS),
+        }
 
     def status_with_siglip(self, path: str = ""):
         refresh_encoder(self)
@@ -151,6 +210,11 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         payload["semanticModel"] = self.encoder.name == ENCODER_NAME
         payload["model"] = self.siglip_bundle.status()
         payload["suggestionMode"] = "siglip-zero-shot" if payload["semanticModel"] else "visual-prototype"
+        if payload["semanticModel"]:
+            cached, missing = cached_prompt_vectors(self)
+            payload["promptVectors"] = len(cached)
+            payload["promptTarget"] = len(DEFAULT_TAG_PROMPTS)
+            payload["promptWarmup"] = self._siglip_warmup_running or bool(missing)
         return payload
 
     def queue_with_siglip(self, path: str):
@@ -159,7 +223,8 @@ def _install_manager_patch(auto_tag_support_module) -> None:
 
     Manager.__init__ = init_with_siglip
     Manager._refresh_siglip_encoder = refresh_encoder
-    Manager._siglip_prompt_vectors = prompt_vectors
+    Manager._siglip_prompt_vectors = build_prompt_vectors
+    Manager._start_siglip_prompt_warmup = start_prompt_warmup
     Manager.suggestions = semantic_suggestions
     Manager.status = status_with_siglip
     Manager.queue_media = queue_with_siglip
@@ -168,6 +233,9 @@ def _install_manager_patch(auto_tag_support_module) -> None:
 
 def install(server_module, auto_tag_support_module) -> None:
     _install_manager_patch(auto_tag_support_module)
+    app_dir = Path(server_module.APP_DIR)
+    server_module.STATIC_FILES["/auto_tag_ui.js"] = app_dir / "auto_tag_ui.js"
+    server_module.STATIC_FILES["/auto_tag_ui.css"] = app_dir / "auto_tag_ui.css"
     original_make_handler = server_module.make_handler
 
     def make_handler(store):
