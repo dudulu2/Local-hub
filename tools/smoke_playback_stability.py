@@ -15,19 +15,26 @@ import media_probe
 def main() -> None:
     js = (ROOT / "playback_stability.js").read_text("utf-8")
     css = (ROOT / "playback_stability.css").read_text("utf-8")
+    smart = (ROOT / "smart_ui.js").read_text("utf-8")
     probe_source = (ROOT / "media_probe.py").read_text("utf-8")
 
+    # The enhancement layer may observe playback, but smart_ui.js is the only
+    # front-end owner of source selection / compatibility startup.
     assert "video.addEventListener('click'" in js
     assert "/api/compat/cancel" in js
     assert "hover-interactive" in js
     assert "lh-player-portrait" in js and "lh-player-portrait" in css
-    assert "GATED_EXTS" in js and "browserSafe" in js
-    assert "startForcedTranscode" in js and "noteTimelineAnomaly" in js
     assert "video.addEventListener('stalled'" in js and "video.addEventListener('waiting'" in js
+    assert "/api/media/probe" not in js, "playback enhancement must not run a second probe chain"
+    assert "startForcedTranscode" not in js, "watchdog must not auto-start hidden transcoding"
+    assert "GATED_EXTS" not in js, "enhancement layer must not gate/remove smart_ui sources"
+    assert "video.removeAttribute('src')" not in js, "enhancement layer must never clear the current source"
+    assert "video.src =" not in js, "enhancement layer must never replace the current source"
+    assert "async function getProbe(item)" in smart and "async function startCompatibility" in smart
     assert "_PROBE_EXECUTOR = threading.BoundedSemaphore(1)" in probe_source
 
     # A nominal H.264 MP4 with no reliable frame-rate metadata must not be sent
-    # straight into Chromium. It needs a real timestamp rebuild/transcode.
+    # straight into Chromium by the media strategy.
     risks = media_probe._timeline_risks(
         ext=".mp4",
         text="",
@@ -49,7 +56,6 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="localhub-ts-guard-") as tmp:
         root = Path(tmp)
         source = root / "large.ts"
-        # Sparse file: validates the size guard without writing gigabytes.
         with source.open("wb") as fp:
             fp.seek(compat_support.LARGE_TS_BYTES + 1024)
             fp.write(b"\0")
