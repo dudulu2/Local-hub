@@ -197,6 +197,8 @@ def configure_server(root: Path):
     server.STATIC_FILES["/move_branding.js"] = app_dir / "move_branding.js"
     server.STATIC_FILES["/v23_features.js"] = app_dir / "v23_features.js"
     server.STATIC_FILES["/v23_features.css"] = app_dir / "v23_features.css"
+    server.STATIC_FILES["/v23_player_fix.js"] = app_dir / "v23_player_fix.js"
+    server.STATIC_FILES["/v23_player_fix.css"] = app_dir / "v23_player_fix.css"
 
     rating_support.install(server, smart_mode)
     catalog_cache.cleanup_legacy_thumbnail_cache(root)
@@ -242,7 +244,10 @@ def self_test() -> int:
         if not callable(getattr(recommendation_support, "install", None)):
             return 12
         app_dir = Path(server.APP_DIR)
-        for name in ("smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js", "move_branding.js", "v23_features.js", "v23_features.css"):
+        for name in (
+            "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
+            "move_branding.js", "v23_features.js", "v23_features.css", "v23_player_fix.js", "v23_player_fix.css",
+        ):
             if not (app_dir / name).exists():
                 return 20
 
