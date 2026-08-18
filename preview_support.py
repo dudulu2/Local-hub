@@ -55,8 +55,8 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
 <style>
 .viewer.lh-probe-portrait{width:min(720px,94vw)!important;height:min(96vh,1040px)!important}
 .viewer.lh-probe-portrait .player-shell{height:calc(100% - 164px)!important}
-.viewer.lh-probe-portrait .viewer-stage{min-height:0!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important}
-.viewer.lh-probe-portrait .viewer-stage video{width:var(--lh-fit-w,auto)!important;height:var(--lh-fit-h,100%)!important;max-width:100%!important;max-height:100%!important;object-fit:fill!important;object-position:center center!important;flex:none!important}
+.viewer.lh-probe-portrait .viewer-stage{min-height:0!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;background:#050506!important}
+.viewer.lh-probe-portrait .viewer-stage video{width:var(--lh-fit-w,auto)!important;height:var(--lh-fit-h,100%)!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important;flex:none!important;background:#050506!important}
 .viewer.lh-probe-landscape .viewer-stage video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important}
 .viewer-stage.lh-click-toggle{cursor:pointer}
 @media(max-width:760px){.viewer.lh-probe-portrait{width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0!important}.viewer.lh-probe-portrait .player-shell{height:calc(100% - 160px)!important}}
@@ -148,9 +148,6 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
 
 def install(server_module) -> None:
     """Add low-cost preview endpoints, playback priority, portrait fit, and optional recommendations."""
-    # Recommendation is installed through this already-loaded extension layer so
-    # the stable launcher/player core does not need another integration point.
-    # The recommendation engine reads only the existing in-memory catalog.
     recommendation_support.install(server_module, smart_mode)
     playback_priority.install()
     original_make_handler = server_module.make_handler
