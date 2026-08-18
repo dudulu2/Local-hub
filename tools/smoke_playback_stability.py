@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import compat_support
 
 
 def main() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    js = (repo / "playback_stability.js").read_text("utf-8")
-    css = (repo / "playback_stability.css").read_text("utf-8")
+    js = (ROOT / "playback_stability.js").read_text("utf-8")
+    css = (ROOT / "playback_stability.css").read_text("utf-8")
 
     assert "video.addEventListener('click'" in js
     assert "/api/compat/cancel" in js
