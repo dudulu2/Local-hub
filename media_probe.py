@@ -18,6 +18,11 @@ _CACHE_LOCK = threading.RLock()
 _CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _CACHE_MAX = 96
 _CACHE_TTL = 900.0
+# The player, orientation patch, hover code and Auto Tag may ask for the same
+# metadata at nearly the same time. Serialize the expensive FFmpeg probe and
+# re-check the cache after acquiring the slot so duplicate requests collapse to
+# one disk read instead of spawning several FFmpeg processes.
+_PROBE_EXECUTOR = threading.BoundedSemaphore(1)
 
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _INPUT_RE = re.compile(r"Input #0,\s*([^,\n]+(?:,[^'\n]+)?)\s*,\s*from", re.IGNORECASE)
@@ -118,15 +123,10 @@ def _timeline_risks(
     if fps is None:
         risks.append("无法确认可靠帧率")
     elif fps_source != "fps":
-        # A tbr-only rate is often enough for desktop players, but it is a weak
-        # signal for Chromium's timeline. Treat it as uncertain so a malformed
-        # MP4 cannot enter the browser before compatibility handling has a chance.
         risks.append("帧率只能由容器时基推断")
     for pattern, label in _TIMELINE_WARNING_PATTERNS:
         if pattern.search(text) and label not in risks:
             risks.append(label)
-    # AVI/MPEG-PS/TS frequently carry timestamps that tolerant desktop players
-    # repair on the fly. Browser playback is deliberately never trusted here.
     if ext in _LEGACY_TIMELINE_EXTS and "传统容器时间轴需整理" not in risks:
         risks.append("传统容器时间轴需整理")
     return risks
@@ -148,9 +148,6 @@ def _strategy(
 
     native_audio = not audio or audio in {"aac", "mp3", "opus", "vorbis", "flac"}
 
-    # These containers are intentionally normalized by re-encoding. A plain
-    # H.264 stream copy can preserve broken DTS/PTS and reproduce the exact
-    # frame-jumping behaviour LocalHub is trying to avoid.
     if ext in _LEGACY_TIMELINE_EXTS:
         return "compat", "transcode", "传统视频容器先重建时间轴并转换为浏览器稳定格式"
 
@@ -177,17 +174,7 @@ def _strategy(
     return "compat", "transcode", f"{video_codec or '未知编码'} 建议转换为 H.264/AAC 后播放"
 
 
-def probe_media(path: Path, timeout: int = 7) -> dict:
-    try:
-        key = _identity(path)
-        stat = path.stat()
-    except OSError:
-        return {"ok": False, "error": "文件不存在"}
-
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
-
+def _probe_uncached(path: Path, stat, timeout: int, key: str) -> dict:
     exe = ffmpeg_exe()
     if not exe:
         data = {
@@ -198,6 +185,9 @@ def probe_media(path: Path, timeout: int = 7) -> dict:
             "browserSafe": False,
             "timelineRisk": True,
             "riskReasons": ["无法检查媒体时间轴"],
+            "strategy": "unsupported",
+            "compatMode": "transcode",
+            "reason": "媒体信息无法可靠读取，禁止直接交给浏览器解码",
         }
         _cache_put(key, data)
         return data
@@ -331,6 +321,24 @@ def probe_media(path: Path, timeout: int = 7) -> dict:
     }
     _cache_put(key, data)
     return data
+
+
+def probe_media(path: Path, timeout: int = 7) -> dict:
+    try:
+        key = _identity(path)
+        stat = path.stat()
+    except OSError:
+        return {"ok": False, "error": "文件不存在"}
+
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    with _PROBE_EXECUTOR:
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        return _probe_uncached(path, stat, timeout, key)
 
 
 def clear_probe_cache() -> None:
