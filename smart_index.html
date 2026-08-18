@@ -116,13 +116,13 @@
 
   <div id="toast" class="toast"></div>
   <script src="/smart_ui.js"></script>
-  <script src="/ux_enhancements.js"></script>
   <script>
-    // LocalHub 2.3.1 bootstrap guard: v23_features replaces the rescan label with
-    // an SVG icon. Its observer only needs the disabled state; observing its own
-    // childList makes innerHTML changes recursively schedule more callbacks.
-    (()=>{const Native=window.MutationObserver;if(!Native)return;window.MutationObserver=class LocalHubMutationObserver extends Native{observe(target,options={}){if(target?.id==='rescanBtn'&&Array.isArray(options?.attributeFilter)&&options.attributeFilter.includes('disabled')){return super.observe(target,{attributes:true,attributeFilter:['disabled']});}return super.observe(target,options);}}})();
+    // 2.3.2 observer guard. The UX layer only needs to notice replacement of
+    // media cards and viewer tags; observing every time label mutation causes
+    // needless whole-page rescans while a video is playing or being scrubbed.
+    (()=>{const Native=window.MutationObserver;if(!Native)return;window.MutationObserver=class LocalHubMutationObserver extends Native{observe(target,options={}){if(target===document.body&&options?.subtree&&options?.childList&&!options?.attributes&&!options?.characterData){const grid=document.querySelector('#grid'),tags=document.querySelector('#viewerTagStrip');if(grid)super.observe(grid,{childList:true});if(tags)super.observe(tags,{childList:true});return;}if(target?.id==='rescanBtn'&&Array.isArray(options?.attributeFilter)&&options.attributeFilter.includes('disabled')){return super.observe(target,{attributes:true,attributeFilter:['disabled']});}return super.observe(target,options);}}})();
   </script>
+  <script src="/ux_enhancements.js"></script>
   <script src="/v23_features.js"></script>
   <script src="/v23_player_fix.js"></script>
   <script>
