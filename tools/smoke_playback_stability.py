@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +19,6 @@ def main() -> None:
     smart = (ROOT / "smart_ui.js").read_text("utf-8")
     probe_source = (ROOT / "media_probe.py").read_text("utf-8")
 
-    # The enhancement layer may observe playback, but smart_ui.js is the only
-    # front-end owner of source selection / compatibility startup.
     assert "video.addEventListener('click'" in js
     assert "/api/compat/cancel" in js
     assert "hover-interactive" in js
@@ -32,9 +31,9 @@ def main() -> None:
     assert "video.src =" not in js, "enhancement layer must never replace the current source"
     assert "async function getProbe(item)" in smart and "async function startCompatibility" in smart
     assert "_PROBE_EXECUTOR = threading.BoundedSemaphore(1)" in probe_source
+    assert "_DEFAULT_WAIT_TIMEOUT = 0.75" in probe_source
+    assert "probeTransient" in probe_source
 
-    # A nominal H.264 MP4 with no reliable frame-rate metadata must not be sent
-    # straight into Chromium by the media strategy.
     risks = media_probe._timeline_risks(
         ext=".mp4",
         text="",
@@ -48,10 +47,24 @@ def main() -> None:
     strategy, mode, _ = media_probe._strategy(".mp4", "h264", "aac", timeline_risk=True)
     assert strategy == "compat" and mode == "transcode"
 
-    # AVI/MPG/TS never use a plain H.264 stream copy: that can preserve broken
-    # DTS/PTS and reproduce the frame-bouncing failure.
     legacy_strategy, legacy_mode, _ = media_probe._strategy(".avi", "h264", "mp3", timeline_risk=False)
     assert legacy_strategy == "compat" and legacy_mode == "transcode"
+
+    # If another preview owns the global probe slot, a player request must return
+    # quickly instead of waiting behind it indefinitely.
+    with tempfile.TemporaryDirectory(prefix="localhub-probe-guard-") as tmp:
+        source = Path(tmp) / "probe.mp4"
+        source.write_bytes(b"not-a-real-video")
+        assert media_probe._PROBE_EXECUTOR.acquire(timeout=0.1)
+        try:
+            started = time.monotonic()
+            result = media_probe.probe_media(source, timeout=4.0, wait_timeout=0.15)
+            elapsed = time.monotonic() - started
+            assert elapsed < 0.8, elapsed
+            assert result.get("probeBusy") is True
+            assert result.get("probeTransient") is True
+        finally:
+            media_probe._PROBE_EXECUTOR.release()
 
     with tempfile.TemporaryDirectory(prefix="localhub-ts-guard-") as tmp:
         root = Path(tmp)
