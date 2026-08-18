@@ -14,13 +14,16 @@ from pathlib import Path
 import media_probe
 
 # Auto compatibility is intentionally conservative. Sequentially rewriting a
-# multi-gigabyte transport stream can saturate the same disk that the browser is
-# reading from and make the tab look frozen. Users can still open these files in
-# their Windows-associated player (PotPlayer, VLC, etc.).
+# multi-gigabyte or long legacy video can saturate the same disk that the browser
+# is reading from and make the tab look frozen. Users can still open these files
+# in their Windows-associated player (PotPlayer, VLC, etc.).
 LARGE_TS_BYTES = 1_500_000_000
 LARGE_TS_DURATION = 3600.0
-LARGE_TRANSCODE_BYTES = 2_000_000_000
-LARGE_TRANSCODE_DURATION = 5400.0
+LARGE_LEGACY_BYTES = 1_000_000_000
+LARGE_LEGACY_DURATION = 3600.0
+LARGE_TRANSCODE_BYTES = 1_500_000_000
+LARGE_TRANSCODE_DURATION = 3600.0
+LEGACY_TIMELINE_EXTS = {".avi", ".mpg", ".mpeg", ".ts"}
 
 
 def cleanup_root(root: Path) -> None:
@@ -96,16 +99,24 @@ class CompatManager:
         duration = float(probe.get("duration") or 0.0)
         ext = source.suffix.lower()
 
+        if not probe.get("ok"):
+            return "媒体信息无法可靠读取，LocalHub 不会自动启动未知长度的兼容任务；请优先使用系统播放器。"
         if ext == ".ts" and (size >= LARGE_TS_BYTES or duration >= LARGE_TS_DURATION):
             return "大型 TS 默认不自动兼容处理，避免长时间占用磁盘并卡住网页；请优先使用系统播放器。"
+        if ext in LEGACY_TIMELINE_EXTS and (size >= LARGE_LEGACY_BYTES or duration >= LARGE_LEGACY_DURATION):
+            return "这个传统格式视频较大或较长，需要重建时间轴并转码；LocalHub 已阻止自动处理，请优先使用系统播放器。"
         if mode == "transcode" and (size >= LARGE_TRANSCODE_BYTES or duration >= LARGE_TRANSCODE_DURATION):
-            return "这个视频需要整段转码且文件较大，LocalHub 已阻止自动转码以保护播放性能；请优先使用系统播放器。"
+            return "这个视频需要整段重建时间轴/转码且文件较大，LocalHub 已阻止自动转码以保护播放性能；请优先使用系统播放器。"
         return ""
 
     def start(self, source: Path, requested_mode: str | None = None, *, force: bool = False) -> dict:
         probe = media_probe.probe_media(source)
         mode = requested_mode if requested_mode in {"remux", "transcode"} else probe.get("compatMode", "transcode")
         if mode not in {"remux", "transcode"}:
+            mode = "transcode"
+        # Never allow a caller to downgrade a known timestamp-risk legacy file to
+        # stream-copy. Copying H.264 out of AVI/MPG/TS can preserve bad DTS/PTS.
+        if source.suffix.lower() in LEGACY_TIMELINE_EXTS or probe.get("timelineRisk"):
             mode = "transcode"
         job_id = self._job_id(source)
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -147,7 +158,7 @@ class CompatManager:
             wanted = source.resolve()
         except OSError:
             wanted = source
-        process = None
+        processes: list[subprocess.Popen | None] = []
         found = False
         with self.lock:
             for job in self.jobs.values():
@@ -162,9 +173,9 @@ class CompatManager:
                 job.status = "error"
                 job.error = "兼容任务已取消"
                 job.finished_at = time.time()
-                process = job.process
-                break
-        _terminate_process(process)
+                processes.append(job.process)
+        for process in processes:
+            _terminate_process(process)
         return found
 
     def _run(self, job: CompatJob, probe: dict) -> None:
@@ -230,6 +241,10 @@ class CompatManager:
 
         command = [
             exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            # Generate missing presentation timestamps and drop corrupt packets
+            # before they can poison the MP4 timeline. Desktop players repair a
+            # lot of this implicitly; Chromium's media pipeline is less tolerant.
+            "-fflags", "+genpts+discardcorrupt",
             "-i", str(job.source),
             "-map", "0:v:0", "-map", "0:a:0?",
             "-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0",
@@ -249,7 +264,17 @@ class CompatManager:
                 "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-threads", "2",
                 "-c:a", "aac", "-b:a", "160k",
             ]
-        command += ["-movflags", "+faststart+use_metadata_tags", "-progress", "pipe:1", "-nostats", str(output)]
+            if str(probe.get("audioCodec", "none")).lower() not in {"", "none", "unknown"}:
+                command += ["-af", "aresample=async=1:first_pts=0"]
+            # Preserve legitimate variable frame rate while writing a fresh,
+            # monotonic output timeline.
+            command += ["-fps_mode", "vfr"]
+        command += [
+            "-avoid_negative_ts", "make_zero",
+            "-max_muxing_queue_size", "2048",
+            "-movflags", "+faststart+use_metadata_tags",
+            "-progress", "pipe:1", "-nostats", str(output),
+        ]
 
         kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", bufsize=1)
         if os.name == "nt":
@@ -371,8 +396,10 @@ def install(server_module) -> None:
                         self.send_error(404)
                         return
                     probe = media_probe.probe_media(media)
-                    probe["autoCompatBlocked"] = bool(manager._auto_block_reason(media, probe, str(probe.get("compatMode", "transcode"))))
-                    probe["systemPreferred"] = bool(probe["autoCompatBlocked"])
+                    blocked_reason = manager._auto_block_reason(media, probe, str(probe.get("compatMode", "transcode")))
+                    probe["autoCompatBlocked"] = bool(blocked_reason)
+                    probe["systemPreferred"] = bool(blocked_reason)
+                    probe["autoCompatBlockReason"] = blocked_reason
                     return self._send_json({"ok": True, "probe": probe})
                 if parsed.path == "/api/compat/status":
                     job_id = query.get("id", [""])[0]
