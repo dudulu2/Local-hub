@@ -14,10 +14,10 @@ import compat_support
 import media_probe
 
 
-def make_video(exe: str, path: Path, codec: str, fmt_args: list[str] | None = None) -> None:
+def make_video(exe: str, path: Path, codec: str, fmt_args: list[str] | None = None, size: str = "320x180") -> None:
     command = [
         exe, "-hide_banner", "-loglevel", "error", "-nostdin",
-        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12",
+        "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=12",
         "-t", "3", "-an", "-c:v", codec,
     ]
     if codec == "libx264":
@@ -49,17 +49,21 @@ def main() -> None:
         native = root / "native.mp4"
         legacy = root / "legacy.mpg"
         mov = root / "indexed.mov"
+        portrait = root / "portrait.mov"
         make_video(exe, native, "libx264")
         make_video(exe, legacy, "mpeg2video")
         make_video(exe, mov, "libx264")
+        make_video(exe, portrait, "libx264", size="180x320")
 
         p_native = media_probe.probe_media(native)
         p_legacy = media_probe.probe_media(legacy)
         p_mov = media_probe.probe_media(mov)
+        p_portrait = media_probe.probe_media(portrait)
         assert p_native["ok"] and p_native["videoCodec"] == "h264", p_native
         assert p_native["strategy"] == "native", p_native
         assert p_legacy["strategy"] == "compat" and p_legacy["compatMode"] == "transcode", p_legacy
         assert p_mov["compatMode"] == "remux", p_mov
+        assert p_portrait["displayWidth"] == 180 and p_portrait["displayHeight"] == 320, p_portrait
 
         manager = compat_support.CompatManager(root)
         first = manager.start(legacy)
@@ -73,6 +77,14 @@ def main() -> None:
         second = manager.start(mov, "remux")
         result2 = wait_job(manager, second["id"])
         assert result2["status"] == "ready" and result2["mode"] == "remux", result2
+
+        portrait_job = manager.start(portrait, "remux")
+        portrait_result = wait_job(manager, portrait_job["id"])
+        assert portrait_result["status"] == "ready" and portrait_result["mode"] == "remux", portrait_result
+        portrait_out = manager.output_for(portrait_job["id"])
+        assert portrait_out and portrait_out.exists()
+        portrait_probe = media_probe.probe_media(portrait_out)
+        assert portrait_probe["displayWidth"] == 180 and portrait_probe["displayHeight"] == 320, portrait_probe
 
     print("compatibility playback smoke test passed")
 
