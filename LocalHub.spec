@@ -19,6 +19,8 @@ a = Analysis(
         ('move_branding.js', '.'),
         ('v23_features.css', '.'),
         ('v23_features.js', '.'),
+        ('v23_player_fix.css', '.'),
+        ('v23_player_fix.js', '.'),
     ] + imageio_datas,
     hiddenimports=[
         'pystray._win32',
