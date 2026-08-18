@@ -190,6 +190,9 @@ def configure_server(root: Path):
     import compat_support
     import rating_support
     import recommendation_support
+    import io_support
+    import auto_tag_support
+    import siglip_support
 
     app_dir = Path(server.APP_DIR)
     server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
@@ -207,6 +210,9 @@ def configure_server(root: Path):
     preview_support.install(server)
     compat_support.install(server)
     recommendation_support.install(server, smart_mode)
+    io_support.install(server)
+    auto_tag_support.install(server, smart_mode)
+    siglip_support.install(server, auto_tag_support)
     cleanup_compat_cache(root)
     return server
 
@@ -239,10 +245,16 @@ def self_test() -> int:
         import server
         import compat_support
         import recommendation_support
+        import auto_tag_support
+        import siglip_support
         if not callable(getattr(compat_support, "install", None)):
             return 11
         if not callable(getattr(recommendation_support, "install", None)):
             return 12
+        if not callable(getattr(auto_tag_support, "install", None)):
+            return 13
+        if not callable(getattr(siglip_support, "install", None)):
+            return 14
         app_dir = Path(server.APP_DIR)
         for name in (
             "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
@@ -267,6 +279,10 @@ def self_test() -> int:
                 payload = json.loads(response.read().decode("utf-8"))
                 if "items" not in payload or "stats" not in payload:
                     return 32
+            with local_urlopen(base + "/api/auto-tag/status", timeout=5.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                if payload.get("ok") is not True or "model" not in payload:
+                    return 33
             httpd.shutdown()
             thread.join(timeout=2.0)
             httpd.server_close()
