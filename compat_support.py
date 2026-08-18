@@ -22,6 +22,20 @@ def cleanup_root(root: Path) -> None:
         pass
 
 
+def _terminate_process(process: subprocess.Popen | None) -> None:
+    if process is None:
+        return
+    try:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=1.0)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
 @dataclass
 class CompatJob:
     job_id: str
@@ -34,6 +48,8 @@ class CompatJob:
     error: str = ""
     started_at: float = field(default_factory=time.time)
     finished_at: float = 0.0
+    cancelled: bool = False
+    process: subprocess.Popen | None = field(default=None, repr=False, compare=False)
 
     def public(self) -> dict:
         return {
@@ -87,8 +103,35 @@ class CompatManager:
                 return None
             return job.output
 
+    def cancel_source(self, source: Path) -> bool:
+        try:
+            wanted = source.resolve()
+        except OSError:
+            wanted = source
+        process = None
+        found = False
+        with self.lock:
+            for job in self.jobs.values():
+                try:
+                    same = job.source.resolve() == wanted
+                except OSError:
+                    same = job.source == source
+                if not same or job.status not in {"queued", "working"}:
+                    continue
+                found = True
+                job.cancelled = True
+                job.status = "error"
+                job.error = "兼容任务已取消"
+                job.finished_at = time.time()
+                process = job.process
+                break
+        _terminate_process(process)
+        return found
+
     def _run(self, job: CompatJob, probe: dict) -> None:
         with self.worker:
+            if job.cancelled:
+                return
             job.status = "working"
             part = job.output.with_suffix(".part.mp4")
             try:
@@ -98,7 +141,7 @@ class CompatManager:
                 pass
 
             ok = self._execute(job, probe, part, job.mode)
-            if not ok and job.mode == "remux":
+            if not ok and not job.cancelled and job.mode == "remux":
                 job.mode = "transcode"
                 job.progress = 0.0
                 try:
@@ -106,6 +149,13 @@ class CompatManager:
                 except OSError:
                     pass
                 ok = self._execute(job, probe, part, "transcode")
+
+            if job.cancelled:
+                try:
+                    part.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return
 
             if ok:
                 try:
@@ -130,6 +180,8 @@ class CompatManager:
         if not exe:
             job.error = "FFmpeg 不可用"
             return False
+        if job.cancelled:
+            return False
 
         command = [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(job.source), "-map", "0:v:0", "-map", "0:a:0?"]
         if mode == "remux":
@@ -151,6 +203,7 @@ class CompatManager:
 
         try:
             process = subprocess.Popen(command, **kwargs)
+            job.process = process
         except OSError as exc:
             job.error = str(exc)
             return False
@@ -174,6 +227,9 @@ class CompatManager:
         try:
             if process.stdout is not None:
                 for line in process.stdout:
+                    if job.cancelled:
+                        _terminate_process(process)
+                        break
                     key, sep, value = line.strip().partition("=")
                     if not sep:
                         continue
@@ -188,13 +244,15 @@ class CompatManager:
             code = process.wait()
             stderr_thread.join(timeout=0.4)
         except Exception as exc:
-            try:
-                process.kill()
-            except OSError:
-                pass
-            job.error = str(exc)
+            _terminate_process(process)
+            if not job.cancelled:
+                job.error = str(exc)
             return False
+        finally:
+            job.process = None
 
+        if job.cancelled:
+            return False
         if code != 0:
             message = " · ".join(x for x in stderr_chunks[-4:] if x)
             job.error = message[-500:] if message else f"FFmpeg 返回 {code}"
@@ -218,6 +276,13 @@ def install(server_module) -> None:
                         media = store.resolve_media(str(payload.get("path", "")))
                         result = manager.start(media, str(payload.get("mode", "")) or None)
                         return self._send_json({"ok": True, "job": result})
+                    except (ValueError, FileNotFoundError) as exc:
+                        return self._send_json({"ok": False, "error": str(exc)}, 400)
+                if parsed.path == "/api/compat/cancel":
+                    try:
+                        payload = self._read_json()
+                        media = store.resolve_media(str(payload.get("path", "")))
+                        return self._send_json({"ok": True, "cancelled": manager.cancel_source(media)})
                     except (ValueError, FileNotFoundError) as exc:
                         return self._send_json({"ok": False, "error": str(exc)}, 400)
                 if parsed.path == "/api/compat/open-system":
