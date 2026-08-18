@@ -29,7 +29,7 @@ on:
       - 'tools/**'
       - '.github/workflows/build-windows.yml'
   pull_request:
-    branches: [main]
+    branches: [main, 'ci/2.2.4-alpha1-build-base']
     paths:
       - 'launcher.py'
       - 'server.py'
