@@ -1,1 +1,0 @@
-Auto Tag explicit opt-in verification marker.
