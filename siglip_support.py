@@ -115,7 +115,10 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         _, missing = cached_prompt_vectors(self)
         if not missing:
             if self._siglip_prompt_cache is None:
-                self._siglip_prompt_cache = {tag: self.index.text_vector(tag, ENCODER_NAME, _prompt_hash(prompts)) for tag, prompts in DEFAULT_TAG_PROMPTS.items()}
+                self._siglip_prompt_cache = {
+                    tag: self.index.text_vector(tag, ENCODER_NAME, _prompt_hash(prompts))
+                    for tag, prompts in DEFAULT_TAG_PROMPTS.items()
+                }
             return
         with self._siglip_prompt_lock:
             if self._siglip_warmup_running:
@@ -169,8 +172,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
             )
 
         semantic_keys = {tag.casefold() for tag in text_vectors}
-        # User-specific tags outside the fixed zero-shot vocabulary can still be
-        # learned from confirmed positive examples.
         for key, row in prototypes.items():
             if key in existing or feedback.get(key) == -1 or key in semantic_keys:
                 continue
@@ -236,6 +237,24 @@ def install(server_module, auto_tag_support_module) -> None:
     app_dir = Path(server_module.APP_DIR)
     server_module.STATIC_FILES["/auto_tag_ui.js"] = app_dir / "auto_tag_ui.js"
     server_module.STATIC_FILES["/auto_tag_ui.css"] = app_dir / "auto_tag_ui.css"
+
+    # Keep Auto Tag out of smart_ui.js / player patches. The outer handler only
+    # injects two lightweight assets into the HTML response, so disabling this
+    # module instantly returns the app to the old player/preview code path.
+    try:
+        base_html = (app_dir / "smart_index.html").read_text("utf-8")
+        enhanced_html = base_html.replace(
+            "</head>",
+            '  <link rel="stylesheet" href="/auto_tag_ui.css">\n</head>',
+            1,
+        ).replace(
+            "</body>",
+            '  <script src="/auto_tag_ui.js"></script>\n</body>',
+            1,
+        ).encode("utf-8")
+    except OSError:
+        enhanced_html = b""
+
     original_make_handler = server_module.make_handler
 
     def make_handler(store):
@@ -249,6 +268,10 @@ def install(server_module, auto_tag_support_module) -> None:
 
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
+                if parsed.path in {"/", "/index.html"} and enhanced_html:
+                    self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(enhanced_html), {"Cache-Control": "no-cache"})
+                    self.wfile.write(enhanced_html)
+                    return
                 if parsed.path != "/api/auto-tag/model":
                     return super().do_GET()
                 manager = getattr(store, "_auto_tag_manager", None)
