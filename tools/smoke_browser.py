@@ -60,7 +60,7 @@ def main() -> None:
             dom = result.stdout
             assert "LocalHub" in dom and 'id="pageTitle"' in dom, "homepage did not render"
             assert "正在建立索引" not in dom or "首页" in dom, "homepage JS did not finish initial render"
-            assert 'data-interaction-fix="2.3.2"' in dom, "2.3.2 interaction fix did not execute in Edge"
+            assert 'data-interaction-fix="2.4-single-owner"' in dom, "single-owner interaction layer did not execute in Edge"
         finally:
             if httpd is not None:
                 httpd.shutdown()
