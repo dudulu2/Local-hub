@@ -6,6 +6,8 @@ from http import HTTPStatus
 from pathlib import Path
 
 import playback_priority
+import recommendation_support
+import smart_mode
 import smart_thumbnail
 from io_scheduler import SCHEDULER
 
@@ -105,11 +107,16 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
 
 
 def install(server_module) -> None:
-    """Add low-cost preview endpoints and playback-first scheduling."""
+    """Add low-cost preview endpoints, playback priority, portrait fit, and optional recommendations."""
+    # Recommendation is installed through this already-loaded extension layer so
+    # the stable launcher/player core does not need another integration point.
+    # The recommendation engine reads only the existing in-memory catalog.
+    recommendation_support.install(server_module, smart_mode)
     playback_priority.install()
     original_make_handler = server_module.make_handler
     video_exts = set(server_module.VIDEO_EXTS)
     smart_html = Path(server_module.APP_DIR) / "smart_index.html"
+    recommendation_js = Path(server_module.APP_DIR) / "recommendation_ui.js"
 
     def make_handler(store):
         BaseHandler = original_make_handler(store)
@@ -140,13 +147,23 @@ def install(server_module) -> None:
                     except OSError:
                         self.send_error(HTTPStatus.NOT_FOUND)
                         return
-                    injected = _PLAYBACK_PRIORITY_SCRIPT + _PORTRAIT_LAYOUT_SCRIPT
+                    injected = '<script src="/recommendation_ui.js"></script>\n' + _PLAYBACK_PRIORITY_SCRIPT + _PORTRAIT_LAYOUT_SCRIPT
                     if "</body>" in html:
                         html = html.replace("</body>", injected + "\n</body>", 1)
                     else:
                         html += injected
                     raw = html.encode("utf-8")
                     self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(raw), {"Cache-Control": "no-cache"})
+                    self.wfile.write(raw)
+                    return
+
+                if parsed.path == "/recommendation_ui.js":
+                    try:
+                        raw = recommendation_js.read_bytes()
+                    except OSError:
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
+                    self._headers(HTTPStatus.OK, "application/javascript; charset=utf-8", len(raw), {"Cache-Control": "no-cache"})
                     self.wfile.write(raw)
                     return
 
