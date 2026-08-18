@@ -131,7 +131,12 @@ class CompatManager:
             job.error = "FFmpeg 不可用"
             return False
 
-        command = [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(job.source), "-map", "0:v:0", "-map", "0:a:0?"]
+        command = [
+            exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-i", str(job.source),
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-map_metadata", "0", "-map_metadata:s:v:0", "0:s:v:0",
+        ]
         if mode == "remux":
             command += ["-c:v", "copy"]
             if str(probe.get("audioCodec", "")).lower() == "aac":
@@ -143,7 +148,7 @@ class CompatManager:
                 "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "160k",
             ]
-        command += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(output)]
+        command += ["-movflags", "+faststart+use_metadata_tags", "-progress", "pipe:1", "-nostats", str(output)]
 
         kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", bufsize=1)
         if os.name == "nt":
