@@ -95,15 +95,16 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
     stage.style.removeProperty('--lh-fit-w');
     stage.style.removeProperty('--lh-fit-h');
   };
-  const apply=(width,height)=>{
+  const apply=(aspect,width,height)=>{
     const w=Number(width)||0,h=Number(height)||0;
-    if(!w||!h)return;
-    displayAspect=w/h;
-    const portrait=h>w*1.08;
+    const declared=Number(aspect)||0;
+    displayAspect=declared>0?declared:(w>0&&h>0?w/h:0);
+    if(!displayAspect)return;
+    const portrait=displayAspect<0.93;
     viewer.classList.toggle('lh-probe-portrait',portrait);
     viewer.classList.toggle('lh-probe-landscape',!portrait);
     stage.classList.toggle('lh-probe-stage-portrait',portrait);
-    stage.style.setProperty('--lh-probe-aspect',`${w}/${h}`);
+    stage.style.setProperty('--lh-probe-aspect',String(displayAspect));
     if(portrait)scheduleFit();
     else{
       stage.style.removeProperty('--lh-fit-w');
@@ -120,12 +121,10 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
       const data=await response.json();
       if(mine!==token||!viewer.open||currentPath()!==path)return;
       const p=data.probe||{};
-      apply(p.displayWidth||p.width,p.displayHeight||p.height);
+      apply(p.displayAspect,p.width,p.height);
     }catch{}
   };
 
-  // Click anywhere on the actual video stage to toggle play/pause. This works
-  // both in the normal dialog and when viewerStage itself owns fullscreen.
   stage.classList.add('lh-click-toggle');
   stage.addEventListener('click',e=>{
     if(!viewer.open||!video.currentSrc)return;
