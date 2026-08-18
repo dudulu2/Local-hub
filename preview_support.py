@@ -55,9 +55,10 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
 <style>
 .viewer.lh-probe-portrait{width:min(720px,94vw)!important;height:min(96vh,1040px)!important}
 .viewer.lh-probe-portrait .player-shell{height:calc(100% - 164px)!important}
-.viewer.lh-probe-portrait .viewer-stage{min-height:0!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;background:#050506!important}
-.viewer.lh-probe-portrait .viewer-stage video{width:var(--lh-fit-w,auto)!important;height:var(--lh-fit-h,100%)!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important;flex:none!important;background:#050506!important}
-.viewer.lh-probe-landscape .viewer-stage video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;object-position:center center!important}
+.viewer.lh-probe-portrait .viewer-stage,
+.viewer.lh-probe-landscape .viewer-stage{min-height:0!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;background:#050506!important}
+.viewer.lh-probe-portrait .viewer-stage video,
+.viewer.lh-probe-landscape .viewer-stage video{width:var(--lh-fit-w,auto)!important;height:var(--lh-fit-h,auto)!important;max-width:none!important;max-height:none!important;object-fit:contain!important;object-position:center center!important;flex:none!important;background:#050506!important}
 .viewer-stage.lh-click-toggle{cursor:pointer}
 @media(max-width:760px){.viewer.lh-probe-portrait{width:100vw!important;max-width:100vw!important;height:100vh!important;max-height:100vh!important;border-radius:0!important}.viewer.lh-probe-portrait .player-shell{height:calc(100% - 160px)!important}}
 </style>
@@ -76,11 +77,11 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
   };
   const fit=()=>{
     fitFrame=0;
-    if(!displayAspect||!viewer.classList.contains('lh-probe-portrait'))return;
+    if(!displayAspect)return;
     const sw=stage.clientWidth,sh=stage.clientHeight;
     if(sw<2||sh<2)return;
-    let h=sh,w=h*displayAspect;
-    if(w>sw){w=sw;h=w/displayAspect;}
+    let w=sw,h=w/displayAspect;
+    if(h>sh){h=sh;w=h*displayAspect;}
     w=Math.max(1,Math.floor(w));
     h=Math.max(1,Math.floor(h));
     stage.style.setProperty('--lh-fit-w',`${w}px`);
@@ -105,11 +106,7 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
     viewer.classList.toggle('lh-probe-landscape',!portrait);
     stage.classList.toggle('lh-probe-stage-portrait',portrait);
     stage.style.setProperty('--lh-probe-aspect',String(displayAspect));
-    if(portrait)scheduleFit();
-    else{
-      stage.style.removeProperty('--lh-fit-w');
-      stage.style.removeProperty('--lh-fit-h');
-    }
+    scheduleFit();
   };
   const refresh=async()=>{
     const path=currentPath();
@@ -138,6 +135,7 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
   addEventListener('resize',scheduleFit);
   new MutationObserver(()=>{clear();setTimeout(refresh,0)}).observe(pathNode,{subtree:true,childList:true,characterData:true});
   video.addEventListener('loadedmetadata',()=>{refresh();scheduleFit();});
+  video.addEventListener('loadeddata',scheduleFit);
   viewer.addEventListener('close',clear);
   refresh();
 })();
@@ -146,7 +144,7 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
 
 
 def install(server_module) -> None:
-    """Add low-cost preview endpoints, playback priority, portrait fit, and optional recommendations."""
+    """Add low-cost preview endpoints, playback priority, exact-fit video layout, and optional recommendations."""
     recommendation_support.install(server_module, smart_mode)
     playback_priority.install()
     original_make_handler = server_module.make_handler
