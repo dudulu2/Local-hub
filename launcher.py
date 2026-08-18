@@ -276,7 +276,7 @@ def self_test() -> int:
             if not wait_health(base, 5.0):
                 return 30
             with local_urlopen(base + "/", timeout=3.0) as response:
-                body = response.read(8192)
+                body = response.read()
                 if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body:
                     return 31
             with local_urlopen(base + "/api/smart/home", timeout=5.0) as response:
