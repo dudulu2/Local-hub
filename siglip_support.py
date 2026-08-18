@@ -69,8 +69,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
             if not missing:
                 self._siglip_prompt_cache = result
                 return result
-            # Never load the ~111 MB text tower or run text inference while a
-            # video is playing/seeking. Suggestions can wait; playback cannot.
             if SCHEDULER.busy():
                 return result
 
@@ -90,8 +88,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
                         self.index.save_text_vector(tag, ENCODER_NAME, fingerprint, vector)
                         result[tag] = vector
             finally:
-                # Text vectors are tiny and live in visual-index.db; the text
-                # ONNX session is intentionally released immediately.
                 self.siglip_encoder.unload_text()
             self._siglip_prompt_cache = result
             return result
@@ -190,8 +186,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
                 }
             )
 
-        # These are ranking scores, not calibrated probabilities. v1 never
-        # auto-writes tags; the user confirms or rejects suggestions.
         items.sort(key=lambda row: row["score"], reverse=True)
         reason = "prompts-warming" if len(text_vectors) < len(DEFAULT_TAG_PROMPTS) else ""
         return {
@@ -204,8 +198,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         }
 
     def status_with_siglip(self, path: str = ""):
-        # Status is polled by the player UI. It must stay O(1) over the library:
-        # never unpack every embedding or rebuild prototypes from this path.
         refresh_encoder(self)
         encoder_name = self.encoder.name
         index_stats = self.index.stats(encoder_name)
@@ -257,22 +249,24 @@ def _install_manager_patch(auto_tag_support_module) -> None:
 
 def install(server_module, auto_tag_support_module) -> None:
     _install_manager_patch(auto_tag_support_module)
+    import interactive_preview_support
+    interactive_preview_support.install(server_module)
+
     app_dir = Path(server_module.APP_DIR)
     server_module.STATIC_FILES["/auto_tag_ui.js"] = app_dir / "auto_tag_ui.js"
     server_module.STATIC_FILES["/auto_tag_ui.css"] = app_dir / "auto_tag_ui.css"
+    server_module.STATIC_FILES["/playback_stability.js"] = app_dir / "playback_stability.js"
+    server_module.STATIC_FILES["/playback_stability.css"] = app_dir / "playback_stability.css"
 
-    # Keep Auto Tag out of smart_ui.js / player patches. The outer handler only
-    # injects two lightweight assets into the HTML response, so disabling this
-    # module instantly returns the app to the old player/preview code path.
     try:
         base_html = (app_dir / "smart_index.html").read_text("utf-8")
         enhanced_html = base_html.replace(
             "</head>",
-            '  <link rel="stylesheet" href="/auto_tag_ui.css">\n</head>',
+            '  <link rel="stylesheet" href="/auto_tag_ui.css">\n  <link rel="stylesheet" href="/playback_stability.css">\n</head>',
             1,
         ).replace(
             "</body>",
-            '  <script src="/auto_tag_ui.js"></script>\n</body>',
+            '  <script src="/auto_tag_ui.js"></script>\n  <script src="/playback_stability.js"></script>\n</body>',
             1,
         ).encode("utf-8")
     except OSError:
