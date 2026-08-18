@@ -11,8 +11,11 @@ from collections import defaultdict
 from http import HTTPStatus
 from pathlib import Path
 
+import smart_thumbnail
+
 RECOMMEND_LIMIT = 8
 _TOKEN_RE = re.compile(r"[\w\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+", re.UNICODE)
+_REC_THUMB_GATE = threading.BoundedSemaphore(1)
 
 
 def _norm(value: str) -> str:
@@ -101,8 +104,59 @@ def _public(item: dict) -> dict:
         "tags": list(item.get("tags", [])),
         "rating": rating,
         "url": item.get("url", "/media/" + urllib.parse.quote(rel, safe="/")),
-        "thumb": "/api/smart/thumb?path=" + urllib.parse.quote(rel, safe=""),
+        "thumb": "/api/recommend/thumb?path=" + urllib.parse.quote(rel, safe=""),
     }
+
+
+def _lightweight_thumb(path: Path, size: int = 360) -> bytes | None:
+    """Return a recommendation cover without stealing FFmpeg from playback.
+
+    Order:
+      1. Reuse LocalHub's in-memory thumbnail cache.
+      2. Ask Windows Explorer's shared thumbnail cache with one global worker.
+      3. Fall back to the normal thumbnail function only when it is allowed.
+
+    playback_priority wraps the normal thumbnail function, so step 3 returns
+    immediately while a video is active instead of starting FFmpeg.
+    """
+    try:
+        key = smart_thumbnail._identity(path, size)
+        cached = smart_thumbnail._cache_get(key)
+    except Exception:
+        return None
+    if cached:
+        return cached
+    if not _REC_THUMB_GATE.acquire(blocking=False):
+        return None
+    try:
+        try:
+            cached = smart_thumbnail._cache_get(key)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+        data = None
+        try:
+            data = smart_thumbnail._shell_thumbnail(path, size)
+        except Exception:
+            data = None
+        if data:
+            try:
+                smart_thumbnail._cache_put(key, data)
+            except Exception:
+                pass
+            return data
+
+        # Safe fallback. During active playback the playback-priority wrapper
+        # refuses this call before FFmpeg starts. When paused/idle it may create
+        # the missing thumbnail normally.
+        try:
+            return smart_thumbnail.get_thumbnail(path, size)
+        except Exception:
+            return None
+    finally:
+        _REC_THUMB_GATE.release()
 
 
 class RecommendationEngine:
@@ -223,7 +277,7 @@ class RecommendationEngine:
 
 
 def install(server_module, smart_mode_module) -> None:
-    """Install a recommendation endpoint without touching playback or media I/O."""
+    """Install recommendations without taking ownership of playback."""
     original_catalog_init = smart_mode_module.Catalog.__init__
     if not getattr(original_catalog_init, "_lh_rec_wrapped", False):
         def catalog_init(self, store, *args, **kwargs):
@@ -233,12 +287,37 @@ def install(server_module, smart_mode_module) -> None:
         smart_mode_module.Catalog.__init__ = catalog_init
 
     original_make_handler = server_module.make_handler
+    video_exts = set(server_module.VIDEO_EXTS)
 
     def make_handler(store):
         BaseHandler = original_make_handler(store)
         engine = RecommendationEngine(store)
 
         class RecommendationHandler(BaseHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlsplit(self.path)
+                if parsed.path != "/api/recommend/thumb":
+                    return super().do_GET()
+                query = urllib.parse.parse_qs(parsed.query)
+                relative = query.get("path", [""])[0]
+                try:
+                    media = store.resolve_media(relative)
+                except (ValueError, FileNotFoundError):
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                if media.suffix.lower() not in video_exts:
+                    self.send_error(HTTPStatus.BAD_REQUEST)
+                    return
+                data = _lightweight_thumb(media, 360)
+                if not data:
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Retry-After", "1")
+                    self.end_headers()
+                    return
+                self._headers(HTTPStatus.OK, "image/jpeg", len(data), {"Cache-Control": "no-store"})
+                self.wfile.write(data)
+
             def do_POST(self):
                 parsed = urllib.parse.urlsplit(self.path)
                 if parsed.path != "/api/recommend":
