@@ -11,6 +11,21 @@ from visual_encoder import pack_vector, unpack_vector
 SCHEMA_VERSION = 2
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """sqlite3's context manager commits/rolls back but does not close.
+
+    LocalHub opens intentionally short-lived connections. Closing them at the
+    end of every ``with`` keeps Windows from retaining visual-index.db handles
+    and avoids accumulating descriptors during long browsing sessions.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class VisualIndex:
     def __init__(self, root: Path) -> None:
         self.path = root / ".localhub" / "visual-index.db"
@@ -19,7 +34,12 @@ class VisualIndex:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=8.0, isolation_level=None)
+        conn = sqlite3.connect(
+            self.path,
+            timeout=8.0,
+            isolation_level=None,
+            factory=_ClosingConnection,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
