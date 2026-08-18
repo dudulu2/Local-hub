@@ -30,8 +30,10 @@
 
 /* Compatibility is automatic. Keep the manual button available to JS but out of the normal UI. */
 #compatBtn{display:none}
-.player-notice{left:16px!important;right:auto!important;top:auto!important;bottom:16px!important;width:auto!important;max-width:min(70%,620px)!important;min-width:0!important;padding:8px 11px!important;border-radius:8px!important;background:rgba(16,16,18,.88)!important;backdrop-filter:blur(8px);box-shadow:none!important;text-align:left!important;pointer-events:none}
-.player-notice strong{font-size:12px!important}.player-notice span{font-size:11px!important;color:#9b9ba1!important}.compat-progress{margin-top:6px!important;height:3px!important}
+/* Keep status centered inside the visible video stage. The old left:16px rule could
+   end up clipped when the modal/stage was narrower or shifted on small windows. */
+.player-notice{left:50%!important;right:auto!important;top:auto!important;bottom:14px!important;transform:translateX(-50%)!important;width:min(520px,calc(100% - 32px))!important;max-width:calc(100% - 32px)!important;min-width:min(240px,calc(100% - 32px))!important;padding:9px 12px!important;border-radius:8px!important;background:rgba(16,16,18,.9)!important;backdrop-filter:blur(8px);box-shadow:none!important;text-align:left!important;pointer-events:none}
+.player-notice strong{font-size:12px!important}.player-notice span{font-size:11px!important;color:#9b9ba1!important;overflow-wrap:anywhere}.compat-progress{margin-top:6px!important;height:3px!important}
 
 /* The old tag modal is retained only for backwards-compatible markup; normal UX never opens it. */
 #tagDialog{display:none!important}
