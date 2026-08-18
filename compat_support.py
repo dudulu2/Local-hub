@@ -13,6 +13,12 @@ from pathlib import Path
 
 import media_probe
 
+# Remuxing is cheap and remains allowed for large TS files. What we avoid is
+# silently falling back to a full video transcode after a remux failure, because
+# that can monopolize the disk/CPU for a very long time without user intent.
+LARGE_TS_TRANSCODE_BYTES = 1_500_000_000
+LARGE_TS_TRANSCODE_DURATION = 3600.0
+
 
 def cleanup_root(root: Path) -> None:
     folder = root / ".localhub" / "compat"
@@ -43,6 +49,7 @@ class CompatJob:
     output: Path
     mode: str
     duration: float | None = None
+    source_size: int = 0
     status: str = "queued"
     progress: float = 0.0
     error: str = ""
@@ -59,6 +66,7 @@ class CompatJob:
             "mode": self.mode,
             "error": self.error,
             "duration": self.duration,
+            "sourceSize": self.source_size,
             "url": f"/api/compat/file?id={urllib.parse.quote(self.job_id)}" if self.status == "ready" else None,
         }
 
@@ -79,14 +87,32 @@ class CompatManager:
     def start(self, source: Path, requested_mode: str | None = None) -> dict:
         probe = media_probe.probe_media(source)
         mode = requested_mode if requested_mode in {"remux", "transcode"} else probe.get("compatMode", "transcode")
+        if mode not in {"remux", "transcode"}:
+            mode = "transcode"
+        # H.264 in TS should first be repaired/remuxed, not needlessly re-encoded.
+        if source.suffix.lower() == ".ts" and str(probe.get("videoCodec", "")).lower() == "h264":
+            mode = "remux"
+
         job_id = self._job_id(source)
         self.folder.mkdir(parents=True, exist_ok=True)
         output = self.folder / f"{job_id}.mp4"
+        try:
+            source_size = source.stat().st_size
+        except OSError:
+            source_size = int(probe.get("size") or 0)
+
         with self.lock:
             existing = self.jobs.get(job_id)
             if existing and existing.status in {"queued", "working", "ready"}:
                 return existing.public()
-            job = CompatJob(job_id=job_id, source=source, output=output, mode=mode, duration=probe.get("duration"))
+            job = CompatJob(
+                job_id=job_id,
+                source=source,
+                output=output,
+                mode=mode,
+                duration=probe.get("duration"),
+                source_size=source_size,
+            )
             self.jobs[job_id] = job
         threading.Thread(target=self._run, args=(job, probe), name=f"LocalHubCompat-{job_id[:6]}", daemon=True).start()
         return job.public()
@@ -108,7 +134,7 @@ class CompatManager:
             wanted = source.resolve()
         except OSError:
             wanted = source
-        process = None
+        processes: list[subprocess.Popen | None] = []
         found = False
         with self.lock:
             for job in self.jobs.values():
@@ -123,10 +149,17 @@ class CompatManager:
                 job.status = "error"
                 job.error = "兼容任务已取消"
                 job.finished_at = time.time()
-                process = job.process
-                break
-        _terminate_process(process)
+                processes.append(job.process)
+        for process in processes:
+            _terminate_process(process)
         return found
+
+    @staticmethod
+    def _large_ts_fallback_blocked(job: CompatJob) -> bool:
+        if job.source.suffix.lower() != ".ts":
+            return False
+        duration = float(job.duration or 0.0)
+        return job.source_size >= LARGE_TS_TRANSCODE_BYTES or duration >= LARGE_TS_TRANSCODE_DURATION
 
     def _run(self, job: CompatJob, probe: dict) -> None:
         with self.worker:
@@ -142,13 +175,17 @@ class CompatManager:
 
             ok = self._execute(job, probe, part, job.mode)
             if not ok and not job.cancelled and job.mode == "remux":
-                job.mode = "transcode"
-                job.progress = 0.0
-                try:
-                    part.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                ok = self._execute(job, probe, part, "transcode")
+                if self._large_ts_fallback_blocked(job):
+                    job.error = "TS 无损封装失败；该文件较大或较长，LocalHub 不会自动整段转码。可先用系统播放器打开。"
+                else:
+                    job.mode = "transcode"
+                    job.progress = 0.0
+                    job.error = ""
+                    try:
+                        part.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    ok = self._execute(job, probe, part, "transcode")
 
             if job.cancelled:
                 try:
@@ -183,19 +220,41 @@ class CompatManager:
         if job.cancelled:
             return False
 
-        command = [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(job.source), "-map", "0:v:0", "-map", "0:a:0?"]
+        ext = job.source.suffix.lower()
+        command = [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+        if ext == ".ts":
+            # Transport streams frequently contain discontinuities, missing PTS,
+            # or damaged packets that desktop players repair implicitly. Generate
+            # a clean timeline before MP4 muxing so Chromium gets monotonic media.
+            command += ["-fflags", "+genpts+discardcorrupt"]
+        command += ["-i", str(job.source), "-map", "0:v:0", "-map", "0:a:0?"]
+
+        audio_codec = str(probe.get("audioCodec", "")).lower()
         if mode == "remux":
             command += ["-c:v", "copy"]
-            if str(probe.get("audioCodec", "")).lower() == "aac":
+            if audio_codec == "aac":
                 command += ["-c:a", "copy"]
+                if ext == ".ts":
+                    command += ["-bsf:a", "aac_adtstoasc"]
+            elif audio_codec in {"", "none", "unknown"}:
+                command += ["-an"]
             else:
                 command += ["-c:a", "aac", "-b:a", "160k"]
         else:
             command += [
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-threads", "2",
                 "-c:a", "aac", "-b:a", "160k",
             ]
-        command += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(output)]
+            if audio_codec not in {"", "none", "unknown"}:
+                command += ["-af", "aresample=async=1:first_pts=0"]
+            command += ["-fps_mode", "vfr"]
+
+        command += [
+            "-avoid_negative_ts", "make_zero",
+            "-max_muxing_queue_size", "2048",
+            "-movflags", "+faststart",
+            "-progress", "pipe:1", "-nostats", str(output),
+        ]
 
         kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", bufsize=1)
         if os.name == "nt":
@@ -209,6 +268,7 @@ class CompatManager:
             return False
 
         duration = float(job.duration or 0.0)
+        source_size = float(job.source_size or 0)
         stderr_chunks: list[str] = []
 
         def drain_stderr() -> None:
@@ -216,7 +276,10 @@ class CompatManager:
                 return
             try:
                 for line in process.stderr:
-                    if len(stderr_chunks) < 20:
+                    if len(stderr_chunks) < 24:
+                        stderr_chunks.append(line.strip())
+                    else:
+                        stderr_chunks.pop(0)
                         stderr_chunks.append(line.strip())
             except Exception:
                 pass
@@ -236,13 +299,24 @@ class CompatManager:
                     if key in {"out_time_ms", "out_time_us"} and duration > 0:
                         try:
                             micros = float(value)
-                            job.progress = min(99.0, max(job.progress, micros / 1_000_000.0 / duration * 100.0))
+                            by_time = micros / 1_000_000.0 / duration * 100.0
+                            job.progress = min(99.0, max(job.progress, by_time))
+                        except ValueError:
+                            pass
+                    elif key == "total_size" and mode == "remux" and source_size > 0:
+                        # TS duration is often absent/unreliable. During stream
+                        # copy the amount written closely tracks the amount read,
+                        # which gives the UI a useful non-zero progress estimate.
+                        try:
+                            written = float(value)
+                            by_size = written / source_size * 100.0
+                            job.progress = min(98.5, max(job.progress, by_size))
                         except ValueError:
                             pass
                     elif key == "progress" and value == "end":
                         job.progress = 99.5
             code = process.wait()
-            stderr_thread.join(timeout=0.4)
+            stderr_thread.join(timeout=0.5)
         except Exception as exc:
             _terminate_process(process)
             if not job.cancelled:
@@ -254,8 +328,8 @@ class CompatManager:
         if job.cancelled:
             return False
         if code != 0:
-            message = " · ".join(x for x in stderr_chunks[-4:] if x)
-            job.error = message[-500:] if message else f"FFmpeg 返回 {code}"
+            message = " · ".join(x for x in stderr_chunks[-6:] if x)
+            job.error = message[-700:] if message else f"FFmpeg 返回 {code}"
             return False
         return output.exists() and output.stat().st_size > 1024
 
