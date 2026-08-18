@@ -2,6 +2,7 @@
   'use strict';
 
   const viewer = document.querySelector('#viewer');
+  const video = document.querySelector('#videoPlayer');
   const pathNode = document.querySelector('#viewerPath');
   const info = document.querySelector('.viewer-info');
   if (!viewer || !pathNode || !info) return;
@@ -9,49 +10,79 @@
   const esc = (s = '') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const read = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); } catch { return fallback; } };
   const write = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   const style = document.createElement('style');
   style.id = 'lhRecommendationStyles';
   style.textContent = `
-    .lh-recommend-strip{height:122px;flex:0 0 122px;border-top:1px solid #242428;background:#0d0d0f;padding:8px 14px 10px;overflow:hidden}
-    .lh-recommend-head{height:20px;display:flex;align-items:center;justify-content:space-between;color:#8d8d94;font-size:10px}
-    .lh-recommend-head strong{color:#d8d8dc;font-size:11px;letter-spacing:.02em}.lh-recommend-head span{color:#55555d;font-size:9px}
-    .lh-recommend-row{height:82px;display:flex;gap:9px;overflow-x:auto;overflow-y:hidden;padding:3px 0 2px;scrollbar-width:thin;scrollbar-color:#333 transparent}
-    .lh-rec-card{width:132px;min-width:132px;border:0;background:transparent;color:inherit;text-align:left;padding:0;cursor:pointer;display:grid;grid-template-columns:72px 1fr;grid-template-rows:41px 18px;column-gap:7px;align-items:start}
-    .lh-rec-thumb{grid-row:1/3;width:72px;height:59px;border:1px solid #29292e;border-radius:6px;overflow:hidden;background:#171719;position:relative}
-    .lh-rec-thumb img{width:100%;height:100%;display:block;object-fit:cover;opacity:0;transition:opacity .15s}.lh-rec-thumb img.loaded{opacity:1}
-    .lh-rec-thumb::after{content:'▶';position:absolute;inset:0;display:grid;place-items:center;color:#aaa;font-size:13px;background:linear-gradient(transparent,rgba(0,0,0,.22));pointer-events:none}
-    .lh-rec-card:hover .lh-rec-thumb{border-color:#55555c}.lh-rec-card:hover .lh-rec-title{color:#fff}
-    .lh-rec-title{font-size:10px;line-height:1.28;color:#c4c4c9;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
-    .lh-rec-meta{font-size:8.5px;color:#66666d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:2px}
-    .lh-rec-empty{height:75px;display:flex;align-items:center;color:#55555d;font-size:10px}
-    #viewer.lh-rec-visible .player-shell{height:calc(100% - 286px)!important}
-    #viewer.lh-probe-portrait.lh-rec-visible .player-shell{height:calc(100% - 286px)!important;min-height:420px}
-    @media(max-height:720px){.lh-recommend-strip{display:none!important}#viewer.lh-rec-visible .player-shell{height:calc(100% - 164px)!important}}
-    @media(max-width:700px){.lh-recommend-strip{height:112px;flex-basis:112px;padding-left:10px;padding-right:10px}.lh-rec-card{width:122px;min-width:122px;grid-template-columns:66px 1fr}.lh-rec-thumb{width:66px;height:54px}#viewer.lh-rec-visible .player-shell,#viewer.lh-probe-portrait.lh-rec-visible .player-shell{height:calc(100% - 276px)!important}}
+    html.lh-viewer-modal-lock,html.lh-viewer-modal-lock body{overflow:hidden!important}
+    #viewer.lh-rec-page{overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important;scrollbar-gutter:stable}
+    #viewer.lh-rec-page .player-shell{height:calc(100% - 164px)!important;min-height:420px}
+    #viewer.lh-probe-portrait.lh-rec-page .player-shell{height:calc(100% - 164px)!important;min-height:420px}
+    .lh-recommend-page{border-top:1px solid #242428;background:#0d0d0f;padding:18px 18px 24px;min-height:210px}
+    .lh-recommend-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px;color:#8d8d94}
+    .lh-recommend-head strong{color:#eeeeef;font-size:15px;line-height:1;font-weight:850;letter-spacing:-.02em}
+    .lh-recommend-head span{color:#65656d;font-size:9px;white-space:nowrap}
+    .lh-recommend-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px 12px;overflow:visible}
+    .lh-rec-card{min-width:0;border:0;background:transparent;color:inherit;text-align:left;padding:0;cursor:pointer;display:block}
+    .lh-rec-thumb{width:100%;aspect-ratio:16/9;border:1px solid #29292e;border-radius:8px;overflow:hidden;background:linear-gradient(135deg,#19191c,#101012);position:relative;display:block}
+    .lh-rec-thumb img{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:cover;opacity:0;transition:opacity .16s ease}
+    .lh-rec-thumb img.loaded{opacity:1}
+    .lh-rec-thumb::after{content:'▶';position:absolute;inset:0;display:grid;place-items:center;color:#b8b8be;font-size:18px;background:linear-gradient(transparent 58%,rgba(0,0,0,.38));pointer-events:none;transition:opacity .12s}
+    .lh-rec-thumb:has(img.loaded)::after{opacity:.15}
+    .lh-rec-card:hover .lh-rec-thumb{border-color:#56565e}.lh-rec-card:hover .lh-rec-title{color:#fff}
+    .lh-rec-title{display:block;margin-top:7px;color:#d2d2d6;font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .lh-rec-meta{display:block;margin-top:3px;color:#686870;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .lh-rec-empty{min-height:130px;display:flex;align-items:center;color:#55555d;font-size:10px}
+    @media(max-width:980px){.lh-recommend-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+    @media(max-width:680px){#viewer.lh-rec-page .player-shell,#viewer.lh-probe-portrait.lh-rec-page .player-shell{height:calc(100% - 160px)!important;min-height:360px}.lh-recommend-page{padding:15px 11px 20px}.lh-recommend-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 9px}.lh-recommend-head{margin-bottom:11px}.lh-rec-title{font-size:10px}}
+    @media(max-height:620px){#viewer.lh-rec-page .player-shell,#viewer.lh-probe-portrait.lh-rec-page .player-shell{min-height:320px}}
   `;
   document.head.appendChild(style);
 
   const panel = document.createElement('section');
   panel.id = 'lhRecommendations';
-  panel.className = 'lh-recommend-strip hidden';
-  panel.innerHTML = '<div class="lh-recommend-head"><strong>猜你想看</strong><span>本地推荐 · 不联网</span></div><div class="lh-recommend-row"></div>';
+  panel.className = 'lh-recommend-page hidden';
+  panel.innerHTML = '<div class="lh-recommend-head"><strong>猜你想看</strong><span>本地推荐 · 不联网</span></div><div class="lh-recommend-grid"></div>';
   info.insertAdjacentElement('afterend', panel);
-  const row = panel.querySelector('.lh-recommend-row');
+  const grid = panel.querySelector('.lh-recommend-grid');
 
   let token = 0;
   let controller = null;
+  let thumbController = null;
   let timer = 0;
   let currentItems = [];
+  let thumbGeneration = 0;
+  const objectUrls = new Set();
+
+  function lockBackground() {
+    if (viewer.open) document.documentElement.classList.add('lh-viewer-modal-lock');
+  }
+
+  function unlockBackground() {
+    document.documentElement.classList.remove('lh-viewer-modal-lock');
+  }
+
+  function releaseThumbs() {
+    thumbGeneration++;
+    if (thumbController) { thumbController.abort(); thumbController = null; }
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    objectUrls.clear();
+  }
 
   function hide() {
     token++;
     clearTimeout(timer);
     if (controller) { controller.abort(); controller = null; }
+    releaseThumbs();
     currentItems = [];
-    row.innerHTML = '';
+    grid.innerHTML = '';
     panel.classList.add('hidden');
     viewer.classList.remove('lh-rec-visible');
+    if (!viewer.open) {
+      viewer.classList.remove('lh-rec-page');
+      unlockBackground();
+    }
   }
 
   function compactHistory() {
@@ -77,21 +108,74 @@
     write('localhub:recExposure', exposure);
   }
 
+  async function loadThumb(img, item, generation) {
+    const src = item.thumb || `/api/recommend/thumb?path=${encodeURIComponent(item.id || '')}`;
+    const delays = [0, 350, 1100, 2200];
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (generation !== thumbGeneration || !viewer.open) return;
+      if (delays[attempt]) await sleep(delays[attempt]);
+      if (generation !== thumbGeneration || !viewer.open) return;
+      try {
+        const response = await fetch(src, {cache:'no-store', signal:thumbController?.signal});
+        if (response.status === 204 || response.status === 503) continue;
+        if (!response.ok) return;
+        const blob = await response.blob();
+        if (!blob.size || generation !== thumbGeneration) return;
+        const url = URL.createObjectURL(blob);
+        objectUrls.add(url);
+        img.onload = () => {
+          if (generation !== thumbGeneration) return;
+          img.classList.add('loaded');
+        };
+        img.src = url;
+        return;
+      } catch (e) {
+        if (e?.name === 'AbortError') return;
+      }
+    }
+  }
+
+  async function loadThumbQueue(items, generation) {
+    const jobs = [...grid.querySelectorAll('.lh-rec-card')].map((card, index) => ({
+      img: card.querySelector('img'),
+      item: items[index]
+    })).filter(job => job.img && job.item);
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < jobs.length && generation === thumbGeneration) {
+        const job = jobs[cursor++];
+        await loadThumb(job.img, job.item, generation);
+      }
+    };
+    await Promise.all([worker(), worker()]);
+  }
+
+  function retryMissingThumbs() {
+    if (!viewer.open || !currentItems.length) return;
+    const missing = [...grid.querySelectorAll('.lh-rec-card')].filter(card => !card.querySelector('img.loaded'));
+    if (!missing.length) return;
+    releaseThumbs();
+    thumbController = new AbortController();
+    const generation = thumbGeneration;
+    loadThumbQueue(currentItems, generation).catch(()=>{});
+  }
+
   function render(items) {
+    releaseThumbs();
     currentItems = items;
     if (!items.length) { hide(); return; }
-    row.innerHTML = items.map((item, index) => `
+    grid.innerHTML = items.map((item, index) => `
       <button class="lh-rec-card" type="button" data-rec-index="${index}" title="${esc(item.name)}">
-        <span class="lh-rec-thumb"><img loading="lazy" decoding="async" src="${esc(item.thumb || '')}" alt=""></span>
+        <span class="lh-rec-thumb"><img alt="" decoding="async"></span>
         <span class="lh-rec-title">${esc(item.name)}</span>
         <span class="lh-rec-meta">${esc(item.folder || '根目录')} · ${esc(String(item.ext || '').toUpperCase())}</span>
       </button>`).join('');
     panel.classList.remove('hidden');
-    viewer.classList.add('lh-rec-visible');
-    panel.querySelectorAll('img').forEach(img => {
-      img.addEventListener('load', () => img.classList.add('loaded'), {once:true});
-      img.addEventListener('error', () => img.removeAttribute('src'), {once:true});
-    });
+    viewer.classList.add('lh-rec-visible','lh-rec-page');
+    lockBackground();
+    thumbController = new AbortController();
+    const generation = thumbGeneration;
+    loadThumbQueue(items, generation).catch(()=>{});
     noteExposure(items);
   }
 
@@ -129,21 +213,29 @@
     clearTimeout(timer);
     const path = (pathNode.textContent || '').trim();
     if (!viewer.open || !path) { hide(); return; }
+    viewer.classList.add('lh-rec-page');
+    lockBackground();
     panel.classList.add('hidden');
     viewer.classList.remove('lh-rec-visible');
+    releaseThumbs();
+    currentItems = [];
+    grid.innerHTML = '';
+    viewer.scrollTop = 0;
     timer = setTimeout(() => loadFor(path), 90);
   }
 
-  row.addEventListener('click', e => {
+  grid.addEventListener('click', e => {
     const card = e.target.closest('.lh-rec-card');
     if (!card) return;
     const item = currentItems[Number(card.dataset.recIndex) || 0];
     if (!item) return;
+    viewer.scrollTop = 0;
     if (typeof window.LocalHubOpenVideo === 'function') {
       window.LocalHubOpenVideo(item);
       return;
     }
-    // Compatibility fallback for an unexpected stale smart_ui.js build.
+    // Compatibility fallback for the stable 2.2.3 player core: close the viewer,
+    // find the exact item through the existing search route, then click its card.
     const close = document.querySelector('#closeViewer');
     const search = document.querySelector('#searchInput');
     close?.click();
@@ -158,8 +250,24 @@
     }, 120);
   });
 
+  // The dialog is the scroll owner. Prevent wheel gestures over the modal from
+  // leaking into the underlying library page.
+  viewer.addEventListener('wheel', e => {
+    if (!viewer.open || e.target.closest('input[type="range"],select')) return;
+    const max = Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+    if (!max) return;
+    viewer.scrollTop = Math.max(0, Math.min(max, viewer.scrollTop + e.deltaY));
+    e.preventDefault();
+  }, {passive:false});
+
+  video?.addEventListener('pause', () => {
+    // If Windows had no shell thumbnail while playback was active, pausing lets
+    // the normal playback-priority-protected thumbnail path fill the remainder.
+    setTimeout(retryMissingThumbs, 80);
+  });
+
   new MutationObserver(schedule).observe(pathNode, {subtree:true, childList:true, characterData:true});
-  viewer.addEventListener('close', hide);
-  viewer.addEventListener('cancel', hide);
+  viewer.addEventListener('close', () => { hide(); unlockBackground(); });
+  viewer.addEventListener('cancel', () => { hide(); unlockBackground(); });
   schedule();
 })();
