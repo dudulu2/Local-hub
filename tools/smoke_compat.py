@@ -48,7 +48,7 @@ def wait_job(manager: compat_support.CompatManager, job_id: str, timeout: float 
     while time.monotonic() < deadline:
         row = manager.status(job_id)
         assert row is not None
-        if row["status"] in {"ready", "error"}:
+        if row.get("backgroundStatus") in {"ready", "error"}:
             return row
         time.sleep(0.1)
     raise AssertionError("compat job timeout")
@@ -80,10 +80,27 @@ def main() -> None:
         assert p_ts["ok"] and p_ts["videoCodec"] == "h264", p_ts
         assert p_ts["strategy"] == "compat" and p_ts["compatMode"] == "remux", p_ts
 
+        # Client-visible fast-start behavior: once a fragmented TS remux has
+        # enough data, the existing UI should receive a playable stream URL even
+        # though the background job is still working.
+        partial = root / "partial.mp4"
+        partial.write_bytes(b"0" * compat_support.STREAM_READY_BYTES)
+        fake = compat_support.CompatJob(
+            job_id="faststart",
+            source=transport,
+            output=partial,
+            mode="remux",
+            source_size=transport.stat().st_size,
+            status="working",
+        )
+        fast = fake.public()
+        assert fast["status"] == "ready" and fast["backgroundStatus"] == "working", fast
+        assert fast["streaming"] is True and "/api/compat/stream?id=faststart" in fast["url"], fast
+
         manager = compat_support.CompatManager(root)
         first = manager.start(legacy)
         result = wait_job(manager, first["id"])
-        assert result["status"] == "ready", result
+        assert result["backgroundStatus"] == "ready", result
         out = manager.output_for(first["id"])
         assert out and out.exists() and out.stat().st_size > 1024
         converted = media_probe.probe_media(out)
@@ -91,14 +108,16 @@ def main() -> None:
 
         second = manager.start(mov, "remux")
         result2 = wait_job(manager, second["id"])
-        assert result2["status"] == "ready" and result2["mode"] == "remux", result2
+        assert result2["backgroundStatus"] == "ready" and result2["mode"] == "remux", result2
 
         third = manager.start(transport)
         assert third["mode"] == "remux", third
         result3 = wait_job(manager, third["id"])
-        assert result3["status"] == "ready" and result3["mode"] == "remux", result3
+        assert result3["backgroundStatus"] == "ready" and result3["mode"] == "remux", result3
         ts_out = manager.output_for(third["id"])
         assert ts_out and ts_out.exists() and ts_out.stat().st_size > 4096
+        raw = ts_out.read_bytes()
+        assert b"moof" in raw, "TS output is not fragmented MP4"
         ts_probe = media_probe.probe_media(ts_out)
         assert ts_probe["ok"] and ts_probe["videoCodec"] == "h264", ts_probe
         assert ts_probe["strategy"] == "native", ts_probe
