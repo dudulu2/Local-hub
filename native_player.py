@@ -10,7 +10,7 @@ import traceback
 from pathlib import Path
 
 MPV_FORMAT_INT64 = 4
-WORKER_POLL_SECONDS = 0.18
+WORKER_POLL_SECONDS = 0.20
 WORKER_STALL_SECONDS = 4.0
 INIT_TIMEOUT_SECONDS = 10.0
 
@@ -23,9 +23,7 @@ def _app_dir() -> Path:
 
 def find_libmpv() -> Path | None:
     env = os.environ.get("LOCALHUB_LIBMPV_DLL", "").strip()
-    candidates = []
-    if env:
-        candidates.append(Path(env))
+    candidates = [Path(env)] if env else []
     base = _app_dir()
     candidates += [
         base / "libmpv-2.dll",
@@ -46,8 +44,7 @@ def _append_log(root: Path, message: str) -> None:
     try:
         folder = Path(root) / ".localhub"
         folder.mkdir(parents=True, exist_ok=True)
-        target = folder / "native-player.log"
-        with target.open("a", encoding="utf-8") as fp:
+        with (folder / "native-player.log").open("a", encoding="utf-8") as fp:
             fp.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message.rstrip()}\n")
     except OSError:
         pass
@@ -70,24 +67,21 @@ class LibMpv:
             self._set_option("osc", "no")
             self._set_option("keep-open", "yes")
             self._set_option("idle", "yes")
-
-            # Alpha2 deliberately favors reliability over GPU offload. mpv itself
-            # keeps hwdec disabled by default because driver/interop bugs can hang
-            # otherwise healthy playback on some Windows systems.
+            # Alpha2 first proves stability. Re-enable hwdec only after real-media
+            # validation because Windows decoder/driver interop can hang a VO.
             self._set_option("hwdec", "no")
             self._set_option("vo", "gpu")
             self._set_option("msg-level", "all=warn")
             if log_path:
                 self._set_option("log-file", str(log_path))
 
-            # mpv documents Win32 WID as an HWND passed as uint32_t. Keep the
-            # unsigned low 32 bits so handles with the sign bit set are not
-            # interpreted as mpv's special negative WID values.
+            # mpv's Win32 wid is an HWND value represented as uint32_t.
             wid = ctypes.c_int64(int(hwnd) & 0xFFFFFFFF)
-            result = self.lib.mpv_set_option(self.handle, b"wid", MPV_FORMAT_INT64, ctypes.byref(wid))
+            result = self.lib.mpv_set_option(
+                self.handle, b"wid", MPV_FORMAT_INT64, ctypes.byref(wid)
+            )
             if result < 0:
                 raise RuntimeError(f"libmpv 无法绑定视频窗口 ({result})")
-
             result = self.lib.mpv_initialize(self.handle)
             if result < 0:
                 raise RuntimeError(f"libmpv 初始化失败 ({result})")
@@ -206,15 +200,7 @@ class LibMpv:
 
 
 class NativePlayerAPI:
-    """
-    pywebview calls exposed API methods from independent worker threads.
-    Alpha2 therefore never lets those bridge threads touch libmpv directly.
-
-    One dedicated daemon thread owns the libmpv instance, processes commands,
-    and refreshes a cached status snapshot. The GUI thread only owns the
-    WinForms Panel. If libmpv/driver code stalls, the LocalHub window remains
-    responsive and can still be closed.
-    """
+    """Non-blocking pywebview bridge with lazy native video surface creation."""
 
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
@@ -230,6 +216,9 @@ class NativePlayerAPI:
         self._worker_stop = threading.Event()
         self._worker_thread: threading.Thread | None = None
         self._status_lock = threading.RLock()
+        self._surface_lock = threading.RLock()
+        self._surface_creating = False
+        self._pending_rect: tuple[float, float, float, float, bool] | None = None
         self._cached_state = {
             "ready": False,
             "paused": True,
@@ -251,54 +240,82 @@ class NativePlayerAPI:
         self._attached = False
 
     def attach(self, window) -> None:
+        """Capture the WinForms host only. Do not touch its control tree yet."""
         if self._attached:
             return
         self._attached = True
         self.window = window
         try:
             from webview.platforms.winforms import BrowserView
-            import System.Windows.Forms as WinForms
             from System import Action
-            from System.Drawing import Color
 
-            # This part must stay on the WinForms GUI thread. Do not initialize
-            # libmpv here: mpv initialization may create child windows and wait
-            # on Win32 message handling.
-            form = BrowserView.instances[window.uid]
-            panel = WinForms.Panel()
-            panel.Name = "LocalHubNativeVideo"
-            panel.BackColor = Color.Black
-            panel.Visible = False
-            panel.TabStop = False
-            form.Controls.Add(panel)
-            panel.BringToFront()
-
-            self.form = form
-            self.panel = panel
+            self.form = BrowserView.instances[window.uid]
             self._action_type = Action
             try:
-                self._scale = float(form._scale)
+                self._scale = float(self.form._scale)
             except Exception:
                 self._scale = 1.0
-
-            hwnd = int(panel.Handle.ToInt64())
-            self._init_started = time.monotonic()
-            self._worker_thread = threading.Thread(
-                target=self._worker_main,
-                args=(hwnd,),
-                name="LocalHubLibMpv",
-                daemon=True,
-            )
-            self._worker_thread.start()
+            _append_log(self.root, "WebView host attached; native surface remains lazy")
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
             _append_log(self.root, f"attach failed\n{traceback.format_exc()}")
 
-    def _set_worker_error(self, message: str) -> None:
-        with self._status_lock:
-            self._worker_error = str(message or "")
-        if message:
-            _append_log(self.root, message)
+    def _ui(self, fn) -> bool:
+        form = self.form
+        if form is None or self._action_type is None:
+            return False
+        try:
+            if form.InvokeRequired:
+                form.BeginInvoke(self._action_type(fn))
+            else:
+                fn()
+            return True
+        except Exception:
+            return False
+
+    def _ensure_surface_async(self) -> None:
+        with self._surface_lock:
+            if self.panel is not None or self._surface_creating or self._worker_stop.is_set():
+                return
+            self._surface_creating = True
+
+        def create_surface():
+            try:
+                import System.Windows.Forms as WinForms
+                from System.Drawing import Color
+
+                panel = WinForms.Panel()
+                panel.Name = "LocalHubNativeVideo"
+                panel.BackColor = Color.Black
+                panel.Visible = False
+                panel.TabStop = False
+                self.form.Controls.Add(panel)
+                panel.BringToFront()
+                self.panel = panel
+                pending = self._pending_rect
+                if pending:
+                    self._apply_rect_ui(*pending)
+                hwnd = int(panel.Handle.ToInt64())
+                self._init_started = time.monotonic()
+                self._worker_thread = threading.Thread(
+                    target=self._worker_main,
+                    args=(hwnd,),
+                    name="LocalHubLibMpv",
+                    daemon=True,
+                )
+                self._worker_thread.start()
+                _append_log(self.root, f"lazy video surface created hwnd={int(hwnd) & 0xFFFFFFFF}")
+            except Exception as exc:
+                self.error = f"{type(exc).__name__}: {exc}"
+                _append_log(self.root, f"surface create failed\n{traceback.format_exc()}")
+            finally:
+                with self._surface_lock:
+                    self._surface_creating = False
+
+        if not self._ui(create_surface):
+            with self._surface_lock:
+                self._surface_creating = False
+            self.error = "WinForms 宿主尚未准备好"
 
     def _worker_main(self, hwnd: int) -> None:
         player = None
@@ -312,34 +329,32 @@ class NativePlayerAPI:
             except OSError:
                 mpv_log = None
 
-            _append_log(self.root, f"worker start dll={dll} hwnd={int(hwnd) & 0xFFFFFFFF}")
+            _append_log(self.root, f"worker start dll={dll}")
             player = LibMpv(dll, hwnd, mpv_log)
             self.player = player
             with self._status_lock:
                 self._engine_ready = True
                 self._worker_error = ""
                 self._heartbeat = time.monotonic()
-            _append_log(self.root, "libmpv initialized on background worker")
+            _append_log(self.root, "libmpv initialized on dedicated worker")
 
             while not self._worker_stop.is_set():
                 try:
                     command, args = self._commands.get(timeout=WORKER_POLL_SECONDS)
                 except queue.Empty:
-                    command = ""
-                    args = ()
-
+                    command, args = "", ()
                 if command == "shutdown":
                     break
                 if command:
                     self._process_command(player, command, args)
-
                 snapshot = player.state()
                 with self._status_lock:
                     self._cached_state = snapshot
                     self._heartbeat = time.monotonic()
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
-            self._set_worker_error(message)
+            with self._status_lock:
+                self._worker_error = message
             _append_log(self.root, f"worker crashed\n{traceback.format_exc()}")
         finally:
             with self._status_lock:
@@ -377,12 +392,13 @@ class NativePlayerAPI:
                 player.command("stop")
                 self.current = ""
         except Exception as exc:
-            self._set_worker_error(f"{command}: {type(exc).__name__}: {exc}")
+            with self._status_lock:
+                self._worker_error = f"{command}: {type(exc).__name__}: {exc}"
+            _append_log(self.root, self._worker_error)
 
     def _enqueue(self, command: str, *args) -> None:
-        if self._worker_stop.is_set():
-            return
-        self._commands.put((command, tuple(args)))
+        if not self._worker_stop.is_set():
+            self._commands.put((command, tuple(args)))
 
     def _resolve(self, relative: str) -> Path:
         text = str(relative or "").replace("\\", "/").lstrip("/")
@@ -397,39 +413,51 @@ class NativePlayerAPI:
             raise FileNotFoundError("视频文件不存在")
         return target
 
-    def _ui(self, fn) -> None:
-        form = self.form
-        if form is None or self._action_type is None:
+    def _apply_rect_ui(self, x: float, y: float, width: float, height: float, visible: bool) -> None:
+        if not self.panel or not self.form:
             return
+        from System.Drawing import Rectangle
+
         try:
-            if form.InvokeRequired:
-                form.BeginInvoke(self._action_type(fn))
-            else:
-                fn()
+            scale = float(getattr(self.form, "_scale", self._scale) or 1.0)
         except Exception:
-            pass
+            scale = self._scale or 1.0
+        left = max(0, int(round(float(x) * scale)))
+        top = max(0, int(round(float(y) * scale)))
+        w = max(1, int(round(float(width) * scale)))
+        h = max(1, int(round(float(height) * scale)))
+        self.panel.Bounds = Rectangle(left, top, w, h)
+        self.panel.Visible = bool(visible)
+        if visible:
+            self.panel.BringToFront()
 
     def player_status(self) -> dict:
         if self.error:
             return {"ok": False, "error": self.error}
-
         now = time.monotonic()
         with self._status_lock:
             engine_ready = bool(self._engine_ready)
             worker_error = self._worker_error
             heartbeat = float(self._heartbeat or 0.0)
             state = dict(self._cached_state)
-
         if worker_error:
-            return {"ok": False, "error": worker_error}
-
+            return {"ok": False, "error": worker_error, "state": state}
+        if self.panel is None:
+            return {
+                "ok": True,
+                "engine": "libmpv",
+                "initializing": bool(self.current),
+                "surfacePending": bool(self.current),
+                "state": state,
+                "path": self.current,
+            }
         if not engine_ready:
             elapsed = now - self._init_started if self._init_started else 0.0
             if self._init_started and elapsed > INIT_TIMEOUT_SECONDS:
                 return {
                     "ok": False,
-                    "error": "libmpv 后台初始化超过 10 秒。窗口仍可操作，请关闭后把 .localhub/native-player.log 发给我。",
-                    "initializing": True,
+                    "error": "libmpv 后台初始化超过 10 秒。主界面仍可操作；诊断见 .localhub/native-player.log。",
+                    "state": state,
                 }
             return {
                 "ok": True,
@@ -438,16 +466,14 @@ class NativePlayerAPI:
                 "state": state,
                 "path": self.current,
             }
-
         if heartbeat and now - heartbeat > WORKER_STALL_SECONDS:
             return {
                 "ok": False,
-                "error": "libmpv 控制线程超过 4 秒没有响应。LocalHub 主界面仍可关闭。",
+                "error": "libmpv 控制线程超过 4 秒无心跳。主界面没有等待这个线程。",
                 "stalled": True,
                 "state": state,
                 "path": self.current,
             }
-
         return {
             "ok": True,
             "engine": "libmpv",
@@ -458,42 +484,22 @@ class NativePlayerAPI:
 
     def player_load(self, path: str, start: float = 0.0) -> dict:
         try:
+            if self.form is None:
+                raise RuntimeError("WebView2 宿主尚未准备好")
             target = self._resolve(path)
             self.current = str(path)
             self._enqueue("load", str(target), max(0.0, float(start or 0.0)), self.current)
-            self._ui(
-                lambda: (
-                    setattr(self.panel, "Visible", True),
-                    self.panel.BringToFront(),
-                )
-                if self.panel
-                else None
-            )
+            self._ensure_surface_async()
             return {"ok": True, "path": self.current, "queued": True}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def player_rect(self, x: float, y: float, width: float, height: float, visible: bool = True) -> dict:
-        if not self.panel or not self.form:
-            return {"ok": False, "error": self.error or "原生视频窗口未初始化"}
-        try:
-            scale = float(getattr(self.form, "_scale", self._scale) or 1.0)
-        except Exception:
-            scale = self._scale or 1.0
-        left = max(0, int(round(float(x) * scale)))
-        top = max(0, int(round(float(y) * scale)))
-        w = max(1, int(round(float(width) * scale)))
-        h = max(1, int(round(float(height) * scale)))
-
-        def apply():
-            from System.Drawing import Rectangle
-
-            self.panel.Bounds = Rectangle(left, top, w, h)
-            self.panel.Visible = bool(visible)
-            if visible:
-                self.panel.BringToFront()
-
-        self._ui(apply)
+        self._pending_rect = (float(x), float(y), float(width), float(height), bool(visible))
+        if self.panel is None:
+            return {"ok": True, "pending": True}
+        pending = self._pending_rect
+        self._ui(lambda: self._apply_rect_ui(*pending))
         return {"ok": True}
 
     def player_toggle_pause(self) -> dict:
@@ -523,6 +529,7 @@ class NativePlayerAPI:
     def player_stop(self) -> dict:
         self.current = ""
         self._enqueue("stop")
+        self._pending_rect = None
         self._ui(lambda: setattr(self.panel, "Visible", False) if self.panel else None)
         return {"ok": True}
 
