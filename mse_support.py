@@ -13,6 +13,7 @@ from pathlib import Path
 import media_probe
 
 STREAM_READY_BYTES = 64 * 1024
+COMPLETE_READY_BYTES = 1024
 
 
 def cleanup_root(root: Path) -> None:
@@ -54,7 +55,12 @@ class MSEJob:
             size = self.output.stat().st_size
         except OSError:
             size = 0
-        stream_ready = self.status in {"working", "ready"} and size >= STREAM_READY_BYTES
+        # While FFmpeg is still writing we wait for a useful head start, but a
+        # completed short clip must never be stuck behind the 64 KiB threshold.
+        stream_ready = (
+            (self.status == "working" and size >= STREAM_READY_BYTES)
+            or (self.status == "ready" and size > COMPLETE_READY_BYTES)
+        )
         return {
             "id": self.job_id,
             "status": self.status,
@@ -78,13 +84,13 @@ class MSEManager:
 
     def _job_id(self, source: Path) -> str:
         st = source.stat()
-        raw = f"{source}|{st.st_size}|{st.st_mtime_ns}|mse1".encode("utf-8", "surrogatepass")
+        raw = f"{source}|{st.st_size}|{st.st_mtime_ns}|mse2".encode("utf-8", "surrogatepass")
         return hashlib.sha256(raw).hexdigest()[:24]
 
     def start(self, source: Path) -> dict:
         probe = media_probe.probe_media(source)
         if str(probe.get("videoCodec", "")).lower() != "h264":
-            raise ValueError("MSE 试播第一版仅验证 H.264 视频")
+            raise ValueError("MSE 试播当前仅验证 H.264 视频")
         audio = str(probe.get("audioCodec", "")).lower()
         has_audio = audio not in {"", "none", "unknown"}
         job_id = self._job_id(source)
@@ -225,7 +231,7 @@ class MSEManager:
 
             if job.cancelled:
                 return
-            if code == 0 and job.output.exists() and job.output.stat().st_size > 1024:
+            if code == 0 and job.output.exists() and job.output.stat().st_size > COMPLETE_READY_BYTES:
                 job.status = "ready"
                 job.progress = 100.0
             else:
