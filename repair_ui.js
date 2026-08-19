@@ -74,17 +74,16 @@
     const path = currentPath();
     if (!path) return;
     await cancelJob();
-    document.dispatchEvent(new CustomEvent('localhub:repair-start'));
     activePath = path;
     starting = true;
     btn.disabled = true;
     btn.textContent = '修复 0%';
-    video.pause();
     const resume = Math.max(0, video.currentTime || 0);
     const wasPaused = video.paused;
     const rate = video.playbackRate || 1;
     const volume = video.volume;
     const muted = video.muted;
+    video.pause();
     setStatus('修复播放正在重建时间轴', '完整解码视频并生成新的 CFR H.264/AAC 临时文件。原文件不会修改。', 0);
     try {
       const d = await api('/api/repair/start', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
@@ -141,7 +140,6 @@
 
   btn.addEventListener('click', () => { void startRepair(); });
   viewer.addEventListener('close', () => { void cancelJob(); });
-  document.addEventListener('localhub:mse-start', () => { void cancelJob(); });
   new MutationObserver(() => {
     const next = currentPath();
     if ((jobId || starting) && activePath && next && next !== activePath) void cancelJob();
