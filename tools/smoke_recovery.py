@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -48,6 +50,17 @@ def video(item_id: str, folder: str, tags: list[str], rating: int = 0) -> dict:
     }
 
 
+def validate_embedded_js() -> None:
+    start = recovery_ui.SCRIPT.find('>') + 1
+    end = recovery_ui.SCRIPT.rfind('</script>')
+    source = recovery_ui.SCRIPT[start:end]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'recovery-ui.js'
+        path.write_text(source, 'utf-8')
+        result = subprocess.run(['node', '--check', str(path)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+
+
 def main() -> None:
     items = [
         video('people/alice_walk_01.mp4', 'people', ['alice', 'walk'], 5),
@@ -74,6 +87,7 @@ def main() -> None:
     assert '/api/media/probe' not in ui
     assert '/api/playback/activity' not in ui
     assert 'SCHEDULER' not in ui
+    validate_embedded_js()
 
     ts_source = inspect.getsource(ts_compat_patch._execute_ts)
     assert '+genpts+discardcorrupt' in ts_source
