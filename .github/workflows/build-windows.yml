@@ -31,9 +31,12 @@ jobs:
           if (-not $asset) { throw 'No mpv-dev-lgpl-x86_64 release asset found' }
           Write-Host "Using $($asset.name)"
           Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile .\_mpv\mpv.7z
-          7z x .\_mpv\mpv.7z -o.\_mpv\expanded -y | Out-Host
-          $dll = Get-ChildItem .\_mpv\expanded -Recurse -File -Filter libmpv-2.dll | Select-Object -First 1
-          if (-not $dll) { throw 'libmpv-2.dll not found in archive' }
+          $archive = (Resolve-Path .\_mpv\mpv.7z).Path
+          $out = (Resolve-Path .\_mpv).Path + '\expanded'
+          & 7z.exe x $archive "-o$out" -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "7z extraction failed: $LASTEXITCODE" }
+          $dll = Get-ChildItem $out -Recurse -File | Where-Object { $_.Name -in @('libmpv-2.dll','mpv-2.dll') } | Select-Object -First 1
+          if (-not $dll) { throw 'libmpv DLL not found in archive' }
           Copy-Item $dll.FullName .\vendor\libmpv-2.dll -Force
           $hash = (Get-FileHash .\vendor\libmpv-2.dll -Algorithm SHA256).Hash.ToLower()
           "asset=$($asset.name)" | Set-Content .\vendor\LIBMPV_BUILD.txt -Encoding utf8
