@@ -7,7 +7,7 @@ block_cipher = None
 imageio_datas, imageio_binaries, imageio_hiddenimports = collect_all('imageio_ffmpeg')
 
 a = Analysis(
-    ['launcher.py'],
+    ['launcher_mse.py'],
     pathex=[],
     binaries=imageio_binaries,
     datas=[
@@ -18,6 +18,7 @@ a = Analysis(
         ('ux_enhancements.js', '.'),
         ('move_branding.js', '.'),
         ('recommendation_ui.js', '.'),
+        ('mse_ui.js', '.'),
     ] + imageio_datas,
     hiddenimports=[
         'pystray._win32',
@@ -42,7 +43,7 @@ exe = EXE(
     name='LocalHub',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
