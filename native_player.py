@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import ctypes
 import os
+import queue
 import sys
 import threading
+import time
+import traceback
 from pathlib import Path
 
 MPV_FORMAT_INT64 = 4
+WORKER_POLL_SECONDS = 0.18
+WORKER_STALL_SECONDS = 4.0
+INIT_TIMEOUT_SECONDS = 10.0
 
 
 def _app_dir() -> Path:
@@ -36,8 +42,19 @@ def find_libmpv() -> Path | None:
     return None
 
 
+def _append_log(root: Path, message: str) -> None:
+    try:
+        folder = Path(root) / ".localhub"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "native-player.log"
+        with target.open("a", encoding="utf-8") as fp:
+            fp.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message.rstrip()}\n")
+    except OSError:
+        pass
+
+
 class LibMpv:
-    def __init__(self, dll: Path, hwnd: int):
+    def __init__(self, dll: Path, hwnd: int, log_path: Path | None = None):
         self.dll_path = Path(dll)
         self.lib = ctypes.CDLL(str(self.dll_path))
         self._bind()
@@ -53,12 +70,24 @@ class LibMpv:
             self._set_option("osc", "no")
             self._set_option("keep-open", "yes")
             self._set_option("idle", "yes")
-            self._set_option("hwdec", "auto-safe")
-            self._set_option("vo", "gpu-next")
+
+            # Alpha2 deliberately favors reliability over GPU offload. mpv itself
+            # keeps hwdec disabled by default because driver/interop bugs can hang
+            # otherwise healthy playback on some Windows systems.
+            self._set_option("hwdec", "no")
+            self._set_option("vo", "gpu")
+            self._set_option("msg-level", "all=warn")
+            if log_path:
+                self._set_option("log-file", str(log_path))
+
+            # mpv documents Win32 WID as an HWND passed as uint32_t. Keep the
+            # unsigned low 32 bits so handles with the sign bit set are not
+            # interpreted as mpv's special negative WID values.
             wid = ctypes.c_int64(int(hwnd) & 0xFFFFFFFF)
             result = self.lib.mpv_set_option(self.handle, b"wid", MPV_FORMAT_INT64, ctypes.byref(wid))
             if result < 0:
                 raise RuntimeError(f"libmpv 无法绑定视频窗口 ({result})")
+
             result = self.lib.mpv_initialize(self.handle)
             if result < 0:
                 raise RuntimeError(f"libmpv 初始化失败 ({result})")
@@ -88,7 +117,11 @@ class LibMpv:
         lib.mpv_free.restype = None
 
     def _set_option(self, name: str, value: str) -> None:
-        result = self.lib.mpv_set_option_string(self.handle, name.encode(), value.encode())
+        result = self.lib.mpv_set_option_string(
+            self.handle,
+            name.encode("utf-8"),
+            str(value).encode("utf-8", "surrogatepass"),
+        )
         if result < 0:
             raise RuntimeError(f"libmpv 选项失败：{name} ({result})")
 
@@ -107,13 +140,19 @@ class LibMpv:
         with self._lock:
             if self._destroyed or not self.handle:
                 return -1
-            return int(self.lib.mpv_set_property_string(self.handle, name.encode(), str(value).encode()))
+            return int(
+                self.lib.mpv_set_property_string(
+                    self.handle,
+                    name.encode("utf-8"),
+                    str(value).encode("utf-8", "surrogatepass"),
+                )
+            )
 
     def get_property(self, name: str, default: str = "") -> str:
         with self._lock:
             if self._destroyed or not self.handle:
                 return default
-            ptr = self.lib.mpv_get_property_string(self.handle, name.encode())
+            ptr = self.lib.mpv_get_property_string(self.handle, name.encode("utf-8"))
             if not ptr:
                 return default
             try:
@@ -167,6 +206,16 @@ class LibMpv:
 
 
 class NativePlayerAPI:
+    """
+    pywebview calls exposed API methods from independent worker threads.
+    Alpha2 therefore never lets those bridge threads touch libmpv directly.
+
+    One dedicated daemon thread owns the libmpv instance, processes commands,
+    and refreshes a cached status snapshot. The GUI thread only owns the
+    WinForms Panel. If libmpv/driver code stalls, the LocalHub window remains
+    responsive and can still be closed.
+    """
+
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         self.window = None
@@ -176,9 +225,35 @@ class NativePlayerAPI:
         self.error = ""
         self.current = ""
         self._scale = 1.0
-        self._lock = threading.RLock()
+        self._action_type = None
+        self._commands: queue.Queue[tuple[str, tuple]] = queue.Queue()
+        self._worker_stop = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+        self._status_lock = threading.RLock()
+        self._cached_state = {
+            "ready": False,
+            "paused": True,
+            "time": 0.0,
+            "duration": 0.0,
+            "volume": 100.0,
+            "speed": 1.0,
+            "videoCodec": "",
+            "videoFormat": "",
+            "hwdec": "",
+            "width": 0,
+            "height": 0,
+            "error": "",
+        }
+        self._engine_ready = False
+        self._init_started = 0.0
+        self._heartbeat = 0.0
+        self._worker_error = ""
+        self._attached = False
 
     def attach(self, window) -> None:
+        if self._attached:
+            return
+        self._attached = True
         self.window = window
         try:
             from webview.platforms.winforms import BrowserView
@@ -186,6 +261,9 @@ class NativePlayerAPI:
             from System import Action
             from System.Drawing import Color
 
+            # This part must stay on the WinForms GUI thread. Do not initialize
+            # libmpv here: mpv initialization may create child windows and wait
+            # on Win32 message handling.
             form = BrowserView.instances[window.uid]
             panel = WinForms.Panel()
             panel.Name = "LocalHubNativeVideo"
@@ -194,20 +272,117 @@ class NativePlayerAPI:
             panel.TabStop = False
             form.Controls.Add(panel)
             panel.BringToFront()
+
             self.form = form
             self.panel = panel
+            self._action_type = Action
             try:
                 self._scale = float(form._scale)
             except Exception:
                 self._scale = 1.0
+
+            hwnd = int(panel.Handle.ToInt64())
+            self._init_started = time.monotonic()
+            self._worker_thread = threading.Thread(
+                target=self._worker_main,
+                args=(hwnd,),
+                name="LocalHubLibMpv",
+                daemon=True,
+            )
+            self._worker_thread.start()
+        except Exception as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
+            _append_log(self.root, f"attach failed\n{traceback.format_exc()}")
+
+    def _set_worker_error(self, message: str) -> None:
+        with self._status_lock:
+            self._worker_error = str(message or "")
+        if message:
+            _append_log(self.root, message)
+
+    def _worker_main(self, hwnd: int) -> None:
+        player = None
+        try:
             dll = find_libmpv()
             if not dll:
                 raise RuntimeError("找不到 libmpv-2.dll")
-            hwnd = int(panel.Handle.ToInt64())
-            self.player = LibMpv(dll, hwnd)
-            self._action_type = Action
+            mpv_log = self.root / ".localhub" / "libmpv.log"
+            try:
+                mpv_log.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                mpv_log = None
+
+            _append_log(self.root, f"worker start dll={dll} hwnd={int(hwnd) & 0xFFFFFFFF}")
+            player = LibMpv(dll, hwnd, mpv_log)
+            self.player = player
+            with self._status_lock:
+                self._engine_ready = True
+                self._worker_error = ""
+                self._heartbeat = time.monotonic()
+            _append_log(self.root, "libmpv initialized on background worker")
+
+            while not self._worker_stop.is_set():
+                try:
+                    command, args = self._commands.get(timeout=WORKER_POLL_SECONDS)
+                except queue.Empty:
+                    command = ""
+                    args = ()
+
+                if command == "shutdown":
+                    break
+                if command:
+                    self._process_command(player, command, args)
+
+                snapshot = player.state()
+                with self._status_lock:
+                    self._cached_state = snapshot
+                    self._heartbeat = time.monotonic()
         except Exception as exc:
-            self.error = f"{type(exc).__name__}: {exc}"
+            message = f"{type(exc).__name__}: {exc}"
+            self._set_worker_error(message)
+            _append_log(self.root, f"worker crashed\n{traceback.format_exc()}")
+        finally:
+            with self._status_lock:
+                self._engine_ready = False
+            if player is not None:
+                try:
+                    player.destroy()
+                except Exception:
+                    pass
+            self.player = None
+            _append_log(self.root, "worker exit")
+
+    def _process_command(self, player: LibMpv, command: str, args: tuple) -> None:
+        try:
+            if command == "load":
+                target, start, relative = args
+                player.load(Path(target), float(start))
+                self.current = str(relative)
+            elif command == "toggle":
+                paused = player.get_property("pause", "yes").lower() in {"yes", "true", "1"}
+                player.set_property("pause", "no" if paused else "yes")
+            elif command == "pause":
+                player.set_property("pause", "yes" if bool(args[0]) else "no")
+            elif command == "seek":
+                player.command("seek", f"{max(0.0, float(args[0])):.3f}", "absolute", "exact")
+            elif command == "seek-relative":
+                player.command("seek", f"{float(args[0]):.3f}", "relative", "exact")
+            elif command == "volume":
+                value = max(0.0, min(100.0, float(args[0])))
+                player.set_property("volume", f"{value:.2f}")
+            elif command == "speed":
+                value = max(0.25, min(4.0, float(args[0])))
+                player.set_property("speed", f"{value:.3f}")
+            elif command == "stop":
+                player.command("stop")
+                self.current = ""
+        except Exception as exc:
+            self._set_worker_error(f"{command}: {type(exc).__name__}: {exc}")
+
+    def _enqueue(self, command: str, *args) -> None:
+        if self._worker_stop.is_set():
+            return
+        self._commands.put((command, tuple(args)))
 
     def _resolve(self, relative: str) -> Path:
         text = str(relative or "").replace("\\", "/").lstrip("/")
@@ -224,7 +399,7 @@ class NativePlayerAPI:
 
     def _ui(self, fn) -> None:
         form = self.form
-        if form is None:
+        if form is None or self._action_type is None:
             return
         try:
             if form.InvokeRequired:
@@ -237,19 +412,64 @@ class NativePlayerAPI:
     def player_status(self) -> dict:
         if self.error:
             return {"ok": False, "error": self.error}
-        if not self.player:
-            return {"ok": False, "error": "libmpv 尚未初始化"}
-        return {"ok": True, "engine": "libmpv", "state": self.player.state(), "path": self.current}
+
+        now = time.monotonic()
+        with self._status_lock:
+            engine_ready = bool(self._engine_ready)
+            worker_error = self._worker_error
+            heartbeat = float(self._heartbeat or 0.0)
+            state = dict(self._cached_state)
+
+        if worker_error:
+            return {"ok": False, "error": worker_error}
+
+        if not engine_ready:
+            elapsed = now - self._init_started if self._init_started else 0.0
+            if self._init_started and elapsed > INIT_TIMEOUT_SECONDS:
+                return {
+                    "ok": False,
+                    "error": "libmpv 后台初始化超过 10 秒。窗口仍可操作，请关闭后把 .localhub/native-player.log 发给我。",
+                    "initializing": True,
+                }
+            return {
+                "ok": True,
+                "engine": "libmpv",
+                "initializing": True,
+                "state": state,
+                "path": self.current,
+            }
+
+        if heartbeat and now - heartbeat > WORKER_STALL_SECONDS:
+            return {
+                "ok": False,
+                "error": "libmpv 控制线程超过 4 秒没有响应。LocalHub 主界面仍可关闭。",
+                "stalled": True,
+                "state": state,
+                "path": self.current,
+            }
+
+        return {
+            "ok": True,
+            "engine": "libmpv",
+            "initializing": False,
+            "state": state,
+            "path": self.current,
+        }
 
     def player_load(self, path: str, start: float = 0.0) -> dict:
         try:
             target = self._resolve(path)
-            if not self.player:
-                raise RuntimeError(self.error or "libmpv 尚未初始化")
-            self.player.load(target, max(0.0, float(start or 0.0)))
             self.current = str(path)
-            self._ui(lambda: (setattr(self.panel, "Visible", True), self.panel.BringToFront()) if self.panel else None)
-            return {"ok": True, "path": self.current}
+            self._enqueue("load", str(target), max(0.0, float(start or 0.0)), self.current)
+            self._ui(
+                lambda: (
+                    setattr(self.panel, "Visible", True),
+                    self.panel.BringToFront(),
+                )
+                if self.panel
+                else None
+            )
+            return {"ok": True, "path": self.current, "queued": True}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -267,6 +487,7 @@ class NativePlayerAPI:
 
         def apply():
             from System.Drawing import Rectangle
+
             self.panel.Bounds = Rectangle(left, top, w, h)
             self.panel.Visible = bool(visible)
             if visible:
@@ -276,46 +497,32 @@ class NativePlayerAPI:
         return {"ok": True}
 
     def player_toggle_pause(self) -> dict:
-        if not self.player:
-            return {"ok": False, "error": self.error or "libmpv 尚未初始化"}
-        paused = self.player.get_property("pause", "yes").lower() in {"yes", "true", "1"}
-        self.player.set_property("pause", "no" if paused else "yes")
+        self._enqueue("toggle")
         return {"ok": True}
 
     def player_pause(self, paused: bool) -> dict:
-        if not self.player:
-            return {"ok": False, "error": self.error or "libmpv 尚未初始化"}
-        self.player.set_property("pause", "yes" if paused else "no")
+        self._enqueue("pause", bool(paused))
         return {"ok": True}
 
     def player_seek(self, seconds: float) -> dict:
-        if not self.player:
-            return {"ok": False, "error": self.error or "libmpv 尚未初始化"}
-        self.player.command("seek", f"{max(0.0, float(seconds)):.3f}", "absolute", "exact")
+        self._enqueue("seek", max(0.0, float(seconds)))
         return {"ok": True}
 
     def player_seek_relative(self, seconds: float) -> dict:
-        if not self.player:
-            return {"ok": False, "error": self.error or "libmpv 尚未初始化"}
-        self.player.command("seek", f"{float(seconds):.3f}", "relative", "exact")
+        self._enqueue("seek-relative", float(seconds))
         return {"ok": True}
 
     def player_volume(self, value: float) -> dict:
-        if not self.player:
-            return {"ok": False, "error": self.error or "libmpv 尚未初始化"}
-        self.player.set_property("volume", f"{max(0.0, min(100.0, float(value))):.2f}")
+        self._enqueue("volume", max(0.0, min(100.0, float(value))))
         return {"ok": True}
 
     def player_speed(self, value: float) -> dict:
-        if not self.player:
-            return {"ok": False, "error": self.error or "libmpv 尚未初始化"}
-        self.player.set_property("speed", f"{max(0.25, min(4.0, float(value))):.3f}")
+        self._enqueue("speed", max(0.25, min(4.0, float(value))))
         return {"ok": True}
 
     def player_stop(self) -> dict:
-        if self.player:
-            self.player.command("stop")
         self.current = ""
+        self._enqueue("stop")
         self._ui(lambda: setattr(self.panel, "Visible", False) if self.panel else None)
         return {"ok": True}
 
@@ -327,13 +534,17 @@ class NativePlayerAPI:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait: bool = False, timeout: float = 1.0) -> None:
+        self._worker_stop.set()
         try:
-            if self.player:
-                self.player.destroy()
-        finally:
-            self.player = None
-            self._ui(lambda: setattr(self.panel, "Visible", False) if self.panel else None)
+            self._commands.put_nowait(("shutdown", ()))
+        except Exception:
+            pass
+        self._ui(lambda: setattr(self.panel, "Visible", False) if self.panel else None)
+        if wait:
+            worker = self._worker_thread
+            if worker and worker.is_alive() and worker is not threading.current_thread():
+                worker.join(timeout=max(0.0, float(timeout)))
 
 
 def self_test(dll_path: str | None = None) -> tuple[bool, str]:
