@@ -14,12 +14,12 @@ VSVersionInfo(
       StringTable(
         '080404B0',
         [StringStruct('CompanyName', 'LocalHub Project'),
-         StringStruct('FileDescription', 'LocalHub 2.3 Alpha1 Native Player'),
-         StringStruct('FileVersion', '2.3.0-alpha1'),
+         StringStruct('FileDescription', 'LocalHub 2.3 Alpha2 Native Stability'),
+         StringStruct('FileVersion', '2.3.0-alpha2'),
          StringStruct('InternalName', 'LocalHub'),
          StringStruct('OriginalFilename', 'LocalHub.exe'),
          StringStruct('ProductName', 'LocalHub'),
-         StringStruct('ProductVersion', '2.3.0-alpha1')])
+         StringStruct('ProductVersion', '2.3.0-alpha2')])
     ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]
