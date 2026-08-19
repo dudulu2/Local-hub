@@ -24,6 +24,7 @@ _INPUT_RE = re.compile(r"Input #0,\s*([^,\n]+(?:,[^'\n]+)?)\s*,\s*from", re.IGNO
 _VIDEO_RE = re.compile(r"Stream #\S+.*?Video:\s*([^,\s]+).*?(\d{2,5})x(\d{2,5})", re.IGNORECASE)
 _AUDIO_RE = re.compile(r"Stream #\S+.*?Audio:\s*([^,\s]+)", re.IGNORECASE)
 _FPS_RE = re.compile(r"(?:,|\s)(\d+(?:\.\d+)?)\s*fps(?:,|\s)", re.IGNORECASE)
+_TBR_RE = re.compile(r"(?:,|\s)(\d+(?:\.\d+)?)\s*tbr(?:,|\s)", re.IGNORECASE)
 _SAR_RE = re.compile(r"SAR\s+(\d+):(\d+)", re.IGNORECASE)
 _DAR_RE = re.compile(r"DAR\s+(\d+):(\d+)", re.IGNORECASE)
 _ROTATION_RE = re.compile(r"rotation(?:\s+of|\s*:)\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
@@ -197,7 +198,10 @@ def probe_media(path: Path, timeout: int = 8) -> dict:
     input_match = _INPUT_RE.search(text)
     video_match = _VIDEO_RE.search(text)
     audio_match = _AUDIO_RE.search(text)
-    fps_match = _FPS_RE.search(video_match.group(0) if video_match else text)
+    # fps is normally printed after the coded resolution, outside VIDEO_RE's
+    # short match. Search the complete stream description and use tbr only as a
+    # fallback so repair-mode CFR follows the source cadence instead of defaulting.
+    fps_match = _FPS_RE.search(text) or _TBR_RE.search(text)
 
     container = input_match.group(1).strip() if input_match else path.suffix.lower().lstrip(".")
     video_codec = video_match.group(1).lower() if video_match else ""
