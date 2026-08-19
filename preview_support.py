@@ -35,7 +35,9 @@ _PLAYBACK_PRIORITY_SCRIPT = r"""
       post({active:false,seeking:false},true);
     }
   };
-  document.addEventListener('pointerdown',e=>{
+  // Use click rather than pointerdown. Long-press move intentionally suppresses
+  // its synthetic click, so a move never leaves the playback-priority latch on.
+  document.addEventListener('click',e=>{
     const card=e.target.closest?.('.card[data-id]');
     if(!card||!card.querySelector('.video-thumb'))return;
     if(e.target.closest?.('[data-fav],[data-edit-tags],[data-tag]'))return;
@@ -142,9 +144,97 @@ _PORTRAIT_LAYOUT_SCRIPT = r"""
 </script>
 """
 
+_MP4_HEALTH_SCRIPT = r"""
+<script>
+(()=>{
+  const viewer=document.querySelector('#viewer');
+  const video=document.querySelector('#videoPlayer');
+  const pathNode=document.querySelector('#viewerPath');
+  const seek=document.querySelector('#seekBar');
+  const compat=document.querySelector('#compatBtn');
+  const toast=document.querySelector('#toast');
+  if(!viewer||!video||!pathNode||!seek||!compat)return;
+
+  let lastTime=0,lastTick=0,peakTime=0,manualUntil=0;
+  let backwardHits=[],triggeredPath='',repairing=false,token=0;
+  const currentPath=()=>String(pathNode.textContent||'').trim();
+  const nativeSource=()=>{
+    const src=String(video.currentSrc||video.getAttribute('src')||'');
+    return viewer.open&&src.includes('/media/')&&!src.includes('/api/compat/');
+  };
+  const isMp4Path=path=>/\.(?:mp4|m4v)$/i.test(path||'');
+  const showToast=text=>{
+    if(!toast)return;
+    toast.textContent=text;toast.classList.add('show');
+    clearTimeout(showToast.t);showToast.t=setTimeout(()=>toast.classList.remove('show'),2200);
+  };
+  const reset=()=>{
+    token++;lastTime=0;lastTick=0;peakTime=0;manualUntil=0;
+    backwardHits=[];repairing=false;triggeredPath='';
+  };
+  const triggerRepair=async reason=>{
+    const path=currentPath();
+    if(repairing||!nativeSource()||!isMp4Path(path)||triggeredPath===path)return;
+    const mine=++token;
+    repairing=true;
+    try{
+      const r=await fetch(`/api/media/probe?path=${encodeURIComponent(path)}`,{cache:'no-store'});
+      if(!r.ok)throw new Error('probe failed');
+      const d=await r.json(),p=d.probe||{};
+      if(mine!==token||currentPath()!==path||!nativeSource())return;
+      // Only auto-repair when FFmpeg can keep the H.264 video stream intact.
+      // Other codecs may require a costly full transcode and stay user-driven.
+      if(String(p.videoCodec||'').toLowerCase()!=='h264'||p.compatMode!=='remux')return;
+      triggeredPath=path;
+      showToast(reason==='seek'?'MP4 时间轴无法定位，正在无损修复…':'检测到 MP4 时间轴反复跳回，正在无损修复…');
+      compat.click();
+    }catch{}
+    finally{repairing=false;}
+  };
+
+  const markManual=()=>{manualUntil=Date.now()+2600;};
+  seek.addEventListener('pointerdown',markManual,true);
+  seek.addEventListener('input',markManual,true);
+  seek.addEventListener('keydown',markManual,true);
+  seek.addEventListener('change',()=>{
+    const d=Number.isFinite(video.duration)&&video.duration>0?video.duration:0;
+    if(!d||!nativeSource()||!isMp4Path(currentPath()))return;
+    markManual();
+    const target=d*Math.max(0,Math.min(1000,Number(seek.value)||0))/1000;
+    setTimeout(()=>{
+      if(!nativeSource()||currentPath()===triggeredPath)return;
+      const tolerance=Math.max(2.5,d*.012);
+      if(Math.abs((video.currentTime||0)-target)>tolerance)void triggerRepair('seek');
+    },950);
+  },true);
+
+  video.addEventListener('timeupdate',()=>{
+    if(!nativeSource()||!isMp4Path(currentPath())){
+      lastTime=video.currentTime||0;lastTick=performance.now();return;
+    }
+    const now=performance.now(),cur=Math.max(0,video.currentTime||0);
+    peakTime=Math.max(peakTime,cur);
+    if(Date.now()>manualUntil&&lastTick&&now-lastTick<3200&&lastTime>2.5&&cur+1.35<lastTime){
+      const stamp=Date.now();
+      backwardHits=backwardHits.filter(t=>stamp-t<9000);
+      backwardHits.push(stamp);
+      if(backwardHits.length>=2)void triggerRepair('loop');
+    }
+    lastTime=cur;lastTick=now;
+  });
+
+  video.addEventListener('loadedmetadata',()=>{
+    lastTime=video.currentTime||0;peakTime=lastTime;lastTick=performance.now();backwardHits=[];
+  });
+  new MutationObserver(()=>reset()).observe(pathNode,{subtree:true,childList:true,characterData:true});
+  viewer.addEventListener('close',reset);
+})();
+</script>
+"""
+
 
 def install(server_module) -> None:
-    """Add low-cost preview endpoints, playback priority, exact-fit video layout, and optional recommendations."""
+    """Add low-cost preview endpoints, playback priority, exact-fit layout, recommendations, and native MP4 health checks."""
     recommendation_support.install(server_module, smart_mode)
     playback_priority.install()
     original_make_handler = server_module.make_handler
@@ -181,7 +271,12 @@ def install(server_module) -> None:
                     except OSError:
                         self.send_error(HTTPStatus.NOT_FOUND)
                         return
-                    injected = '<script src="/recommendation_ui.js"></script>\n' + _PLAYBACK_PRIORITY_SCRIPT + _PORTRAIT_LAYOUT_SCRIPT
+                    injected = (
+                        '<script src="/recommendation_ui.js"></script>\n'
+                        + _PLAYBACK_PRIORITY_SCRIPT
+                        + _PORTRAIT_LAYOUT_SCRIPT
+                        + _MP4_HEALTH_SCRIPT
+                    )
                     if "</body>" in html:
                         html = html.replace("</body>", injected + "\n</body>", 1)
                     else:
