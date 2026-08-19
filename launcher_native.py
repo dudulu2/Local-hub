@@ -88,25 +88,32 @@ def main() -> int:
             raise RuntimeError("WebView2 窗口创建失败")
 
         def on_shown(*_args):
+            # Alpha2 attach only creates the WinForms video panel. libmpv itself
+            # is initialized by a daemon worker after this GUI callback returns.
             player_api.attach(window)
 
         def on_loaded(*_args):
             try:
-                script = (Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "native_player_ui.js").read_text("utf-8")
+                script = (
+                    Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+                    / "native_player_ui.js"
+                ).read_text("utf-8")
                 window.evaluate_js(script)
             except Exception as exc:
                 player_api.error = f"原生播放器 UI 注入失败：{exc}"
 
         def on_closed(*_args):
-            player_api.shutdown()
+            # Never wait for libmpv from the GUI close callback. A stuck driver
+            # must not turn the LocalHub window into a non-responsive window.
+            player_api.shutdown(wait=False)
 
         window.events.shown += on_shown
         window.events.loaded += on_loaded
         window.events.closed += on_closed
 
-        # pywebview uses WinForms + Edge WebView2 on current Windows systems.
-        # The web UI remains HTML/CSS/JS; only video pixels are rendered by libmpv.
-        webview.start(debug=False)
+        # Explicitly use Edge Chromium/WebView2 for the HTML library shell.
+        # libmpv video pixels are rendered in a separate native child surface.
+        webview.start(gui="edgechromium", debug=False)
         return 0
     except Exception as exc:
         detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
@@ -117,7 +124,9 @@ def main() -> int:
         base.show_error("LocalHub Native 启动失败", message)
         return 1
     finally:
-        player_api.shutdown()
+        # The GUI loop is already gone here, so a short bounded wait is safe.
+        # The mpv thread is daemonized and cannot prevent process exit.
+        player_api.shutdown(wait=True, timeout=1.0)
         base.clear_runtime(root)
         if httpd is not None:
             try:
