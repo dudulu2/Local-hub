@@ -37,10 +37,28 @@ def main() -> None:
         assert home_ids == ["B/sample.mp4"], home_ids
 
     js = (ROOT / "move_branding.js").read_text("utf-8")
-    assert "await api('/api/smart/rescan')" in js
-    assert "松开即取消" in js
+    for required in (
+        "LONG_PRESS_MS = 500",
+        "LONG_PRESS_SLOP = 30",
+        "card.draggable = false",
+        "img.draggable = false",
+        "document.addEventListener('dragstart'",
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "await api('/api/smart/rescan')",
+        "location.reload()",
+        "folderBackBtn",
+        "← 上一级",
+        "#moveModeBtn,#rescanBtn,#viewerMoveBtn{display:none!important}",
+    ):
+        assert required in js, required
+
+    # RC4 deliberately removed the RC3 pre-emptive pointer capture that fought
+    # the browser's native image drag cursor and made Home dragging unreliable.
+    assert "setPointerCapture" not in js
     assert "点击目标文件夹" not in js
-    print("move smoke test passed")
+    print("move/navigation smoke test passed")
 
 
 if __name__ == "__main__":
