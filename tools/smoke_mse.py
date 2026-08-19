@@ -60,6 +60,7 @@ def main() -> None:
         started = manager.start(source)
         result = wait_job(manager, started["id"])
         assert result["status"] == "ready", result
+        assert result["streamReady"] is True, result
         output = root / ".localhub" / "mse" / f"{started['id']}.mse.mp4"
         raw = output.read_bytes()
         assert raw.find(b"ftyp") >= 0
@@ -67,6 +68,21 @@ def main() -> None:
         assert raw.find(b"moof") >= 0
         assert raw.find(b"mdat") >= 0
         assert raw.find(b"moov") < raw.find(b"moof"), "init segment must precede media fragments"
+
+        # Regression: a completed short clip must be readable even when its
+        # total fMP4 output is below the streaming 64 KiB head-start threshold.
+        tiny = root / ".localhub" / "mse" / "tiny.mse.mp4"
+        tiny.parent.mkdir(parents=True, exist_ok=True)
+        tiny.write_bytes(b"0" * (mse_support.COMPLETE_READY_BYTES + 1))
+        tiny_job = mse_support.MSEJob(
+            job_id="tiny",
+            source=source,
+            output=tiny,
+            status="ready",
+        )
+        tiny_public = tiny_job.public()
+        assert tiny_public["streamReady"] is True, tiny_public
+        assert tiny_public["url"] and "/api/mse/stream?id=tiny" in tiny_public["url"]
 
     backend = (ROOT / "mse_support.py").read_text("utf-8")
     ui = (ROOT / "mse_ui.js").read_text("utf-8")
@@ -76,6 +92,7 @@ def main() -> None:
         '"+frag_keyframe+empty_moov+default_base_moof+dash"',
         'preview_support._PLAYBACK_PRIORITY_SCRIPT',
         'preview_support._PORTRAIT_LAYOUT_SCRIPT',
+        'COMPLETE_READY_BYTES',
     ):
         assert required in backend, required
     assert "_MP4_HEALTH_SCRIPT" not in backend, "experiment must not auto-remux MP4 before A/B test"
@@ -86,10 +103,14 @@ def main() -> None:
         "appendBuffer",
         "avcC",
         "MSE 试播",
+        "MSE 正在准备",
+        "MSE 试播失败",
+        "nextPath !== activePath",
     ):
         assert required in ui, required
+    assert "if (jobId && currentPath())" not in ui
 
-    print("MSE fragmented MP4 experiment smoke test passed")
+    print("MSE2 fragmented MP4 experiment smoke test passed")
 
 
 if __name__ == "__main__":
