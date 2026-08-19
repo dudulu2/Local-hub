@@ -149,8 +149,8 @@ class MSEManager:
                 "-c:v", "copy",
             ]
             if job.has_audio:
-                # Keep the video bit-exact, but normalize audio to AAC-LC so the
-                # MSE SourceBuffer always has a predictable browser codec.
+                # Keep video bit-exact but normalize audio to AAC-LC so the MSE
+                # SourceBuffer always sees a predictable browser audio codec.
                 command += ["-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1:first_pts=0"]
             else:
                 command += ["-an"]
@@ -236,7 +236,11 @@ class MSEManager:
 
 
 def install(server_module) -> None:
+    import preview_support
+
     original_make_handler = server_module.make_handler
+    smart_html = Path(server_module.APP_DIR) / "smart_index.html"
+    mse_js = Path(server_module.APP_DIR) / "mse_ui.js"
 
     def make_handler(store):
         BaseHandler = original_make_handler(store)
@@ -295,6 +299,42 @@ def install(server_module) -> None:
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
                 query = urllib.parse.parse_qs(parsed.query)
+
+                # This experiment deliberately replaces only the RC4 page
+                # injection. Recommendation, playback-priority and exact-fit stay
+                # identical, while automatic MP4 -> compat remux is omitted so it
+                # cannot contaminate the A/B test against MediaSource.
+                if parsed.path in {"/", "/index.html"}:
+                    try:
+                        html = smart_html.read_text("utf-8")
+                    except OSError:
+                        self.send_error(404)
+                        return
+                    injected = (
+                        '<script src="/recommendation_ui.js"></script>\n'
+                        + preview_support._PLAYBACK_PRIORITY_SCRIPT
+                        + preview_support._PORTRAIT_LAYOUT_SCRIPT
+                        + '<script src="/mse_ui.js"></script>\n'
+                    )
+                    if "</body>" in html:
+                        html = html.replace("</body>", injected + "\n</body>", 1)
+                    else:
+                        html += injected
+                    raw = html.encode("utf-8")
+                    self._headers(200, "text/html; charset=utf-8", len(raw), {"Cache-Control": "no-cache"})
+                    self.wfile.write(raw)
+                    return
+
+                if parsed.path == "/mse_ui.js":
+                    try:
+                        raw = mse_js.read_bytes()
+                    except OSError:
+                        self.send_error(404)
+                        return
+                    self._headers(200, "application/javascript; charset=utf-8", len(raw), {"Cache-Control": "no-cache"})
+                    self.wfile.write(raw)
+                    return
+
                 if parsed.path == "/api/mse/status":
                     result = manager.status(query.get("id", [""])[0])
                     if not result:
