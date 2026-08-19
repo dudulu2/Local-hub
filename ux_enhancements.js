@@ -239,6 +239,48 @@
     video.addEventListener('loadeddata',()=>{if(!video.videoWidth||!video.videoHeight)setTimeout(()=>{if(video.currentTime>0&&!video.videoWidth)requestAutoCompat('视频轨未输出');},1500);});
   }
 
+  function installProcessingStatus() {
+    const notice=$('#playerNotice'),title=$('#playerNoticeTitle'),progress=$('#compatProgress'),row=$('.viewer-title-row');
+    if(!notice||!title||!row)return;
+    let status=$('#processingStatus');
+    if(!status){
+      status=document.createElement('div');status.id='processingStatus';status.className='processing-status hidden';
+      status.innerHTML='<span class="processing-status-dot"></span><span class="processing-status-label"></span>';
+      row.insertAdjacentElement('afterend',status);
+    }
+    const label=status.querySelector('.processing-status-label');
+    const sync=()=>{
+      if(notice.classList.contains('hidden')){status.classList.add('hidden');status.classList.remove('error');return;}
+      const t=(title.textContent||'').trim();let kind='';
+      if(/兼容封装/.test(t))kind='无损封装';
+      else if(/准备兼容播放|转为兼容格式|兼容转码/.test(t))kind='兼容转码';
+      else if(/兼容播放失败/.test(t))kind='处理失败';
+      else {status.classList.add('hidden');return;}
+      let pct='';const width=progress?.querySelector('i')?.style?.width||'';
+      if(/^\d+(?:\.\d+)?%$/.test(width)&&parseFloat(width)>0)pct=` ${Math.round(parseFloat(width))}%`;
+      if(label)label.textContent=kind==='处理失败'?'视频处理失败':`视频处理中 · ${kind}${pct}`;
+      status.classList.toggle('error',kind==='处理失败');status.classList.remove('hidden');
+    };
+    new MutationObserver(sync).observe(notice,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class']});
+    if(progress)new MutationObserver(sync).observe(progress,{subtree:true,attributes:true,attributeFilter:['style','class']});
+    sync();
+  }
+
+  function installPortraitFit() {
+    const video=$('#videoPlayer'),stage=$('#viewerStage'),viewer=$('#viewer');
+    if(!video||!stage)return;
+    const clear=()=>stage.classList.remove('lh-video-portrait','lh-video-landscape');
+    const fit=()=>{
+      const w=Number(video.videoWidth)||0,h=Number(video.videoHeight)||0;
+      if(!w||!h)return;
+      const portrait=h>w*1.08;
+      stage.classList.toggle('lh-video-portrait',portrait);
+      stage.classList.toggle('lh-video-landscape',!portrait);
+    };
+    video.addEventListener('loadedmetadata',fit);video.addEventListener('loadeddata',fit);video.addEventListener('resize',fit);video.addEventListener('emptied',clear);
+    viewer?.addEventListener('close',clear);fit();
+  }
+
   document.addEventListener('click',e=>{
     const remove=e.target.closest('.tag-remove-inline');
     if(remove){e.preventDefault();e.stopImmediatePropagation();const chip=remove.closest('.tag-chip,.viewer-tag-chip');const strip=chip?.closest('[data-tag-strip],#viewerTagStrip');const path=strip?.dataset.tagStrip||currentPath();const tag=(chip?.dataset.tag||chip?.dataset.viewerTag||'').trim();if(path&&tag)removeTag(path,tag);return;}
@@ -257,5 +299,5 @@
   },true);
 
   new MutationObserver(()=>decorateAll()).observe(document.body,{subtree:true,childList:true});
-  watchPlayerNotice();installBlackFrameWatch();decorateAll();
+  watchPlayerNotice();installBlackFrameWatch();installProcessingStatus();installPortraitFit();decorateAll();
 })();

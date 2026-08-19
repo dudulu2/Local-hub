@@ -17,6 +17,7 @@ a = Analysis(
         ('ux_enhancements.css', '.'),
         ('ux_enhancements.js', '.'),
         ('move_branding.js', '.'),
+        ('recommendation_ui.js', '.'),
     ] + imageio_datas,
     hiddenimports=[
         'pystray._win32',

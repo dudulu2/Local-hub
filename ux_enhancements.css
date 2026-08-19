@@ -30,8 +30,20 @@
 
 /* Compatibility is automatic. Keep the manual button available to JS but out of the normal UI. */
 #compatBtn{display:none}
-.player-notice{left:16px!important;right:auto!important;top:auto!important;bottom:16px!important;width:auto!important;max-width:min(70%,620px)!important;min-width:0!important;padding:8px 11px!important;border-radius:8px!important;background:rgba(16,16,18,.88)!important;backdrop-filter:blur(8px);box-shadow:none!important;text-align:left!important;pointer-events:none}
-.player-notice strong{font-size:12px!important}.player-notice span{font-size:11px!important;color:#9b9ba1!important}.compat-progress{margin-top:6px!important;height:3px!important}
+/* The legacy notice stays in the DOM for the stable player state machine, but is never rendered. */
+.player-notice{display:none!important}
+.processing-status{margin-top:4px;min-height:14px;display:flex;align-items:center;gap:6px;color:#8b8b92;font-size:10px;line-height:1.35}
+.processing-status.hidden{display:none!important}
+.processing-status-dot{width:5px;height:5px;flex:0 0 auto;border-radius:50%;background:currentColor;animation:lh-processing-pulse 1.1s ease-in-out infinite}
+.processing-status.error{color:#c98383}
+@keyframes lh-processing-pulse{0%,100%{opacity:.28}50%{opacity:1}}
+
+/* Portrait fit is metadata-only: no probe request and no extra background work. */
+.viewer-stage{contain:layout paint}
+.viewer-stage video{display:block;object-fit:contain!important;object-position:center center!important;max-width:100%!important;max-height:100%!important}
+.viewer-stage.lh-video-portrait video{width:auto!important;height:100%!important;max-width:100%!important;max-height:100%!important}
+.viewer-stage.lh-video-landscape video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}
+@media(max-width:700px){.viewer-stage.lh-video-portrait video{width:auto!important;height:100%!important}}
 
 /* The old tag modal is retained only for backwards-compatible markup; normal UX never opens it. */
 #tagDialog{display:none!important}

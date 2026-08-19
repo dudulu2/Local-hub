@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import subprocess
@@ -13,6 +12,8 @@ from pathlib import Path
 
 import media_probe
 
+STREAM_READY_BYTES = 64 * 1024
+
 
 def cleanup_root(root: Path) -> None:
     folder = root / ".localhub" / "compat"
@@ -22,6 +23,20 @@ def cleanup_root(root: Path) -> None:
         pass
 
 
+def _terminate_process(process: subprocess.Popen | None) -> None:
+    if process is None:
+        return
+    try:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=1.0)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
 @dataclass
 class CompatJob:
     job_id: str
@@ -29,21 +44,48 @@ class CompatJob:
     output: Path
     mode: str
     duration: float | None = None
+    source_size: int = 0
     status: str = "queued"
     progress: float = 0.0
     error: str = ""
     started_at: float = field(default_factory=time.time)
     finished_at: float = 0.0
+    cancelled: bool = False
+    process: subprocess.Popen | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def streamable(self) -> bool:
+        return self.source.suffix.lower() == ".ts" and self.mode == "remux"
 
     def public(self) -> dict:
+        status = self.status
+        url = None
+        streaming = False
+        if self.status == "ready":
+            url = f"/api/compat/file?id={urllib.parse.quote(self.job_id)}"
+        elif self.streamable and self.status == "working":
+            try:
+                enough = self.output.exists() and self.output.stat().st_size >= STREAM_READY_BYTES
+            except OSError:
+                enough = False
+            if enough:
+                # The UI already knows how to start playback when a compat job
+                # reports ready. For fragmented TS remuxes, expose the growing
+                # stream as soon as the first playable fragment exists.
+                status = "ready"
+                streaming = True
+                url = f"/api/compat/stream?id={urllib.parse.quote(self.job_id)}"
         return {
             "id": self.job_id,
-            "status": self.status,
+            "status": status,
+            "backgroundStatus": self.status,
+            "streaming": streaming,
             "progress": round(max(0.0, min(100.0, self.progress)), 1),
             "mode": self.mode,
             "error": self.error,
             "duration": self.duration,
-            "url": f"/api/compat/file?id={urllib.parse.quote(self.job_id)}" if self.status == "ready" else None,
+            "sourceSize": self.source_size,
+            "url": url,
         }
 
 
@@ -63,14 +105,31 @@ class CompatManager:
     def start(self, source: Path, requested_mode: str | None = None) -> dict:
         probe = media_probe.probe_media(source)
         mode = requested_mode if requested_mode in {"remux", "transcode"} else probe.get("compatMode", "transcode")
+        if mode not in {"remux", "transcode"}:
+            mode = "transcode"
+        if source.suffix.lower() == ".ts" and str(probe.get("videoCodec", "")).lower() == "h264":
+            mode = "remux"
+
         job_id = self._job_id(source)
         self.folder.mkdir(parents=True, exist_ok=True)
         output = self.folder / f"{job_id}.mp4"
+        try:
+            source_size = source.stat().st_size
+        except OSError:
+            source_size = int(probe.get("size") or 0)
+
         with self.lock:
             existing = self.jobs.get(job_id)
             if existing and existing.status in {"queued", "working", "ready"}:
                 return existing.public()
-            job = CompatJob(job_id=job_id, source=source, output=output, mode=mode, duration=probe.get("duration"))
+            job = CompatJob(
+                job_id=job_id,
+                source=source,
+                output=output,
+                mode=mode,
+                duration=probe.get("duration"),
+                source_size=source_size,
+            )
             self.jobs[job_id] = job
         threading.Thread(target=self._run, args=(job, probe), name=f"LocalHubCompat-{job_id[:6]}", daemon=True).start()
         return job.public()
@@ -80,6 +139,11 @@ class CompatManager:
             job = self.jobs.get(job_id)
             return job.public() if job else None
 
+    def stream_job(self, job_id: str) -> CompatJob | None:
+        with self.lock:
+            job = self.jobs.get(job_id)
+            return job if job and job.streamable else None
+
     def output_for(self, job_id: str) -> Path | None:
         with self.lock:
             job = self.jobs.get(job_id)
@@ -87,29 +151,70 @@ class CompatManager:
                 return None
             return job.output
 
+    def cancel_source(self, source: Path) -> bool:
+        try:
+            wanted = source.resolve()
+        except OSError:
+            wanted = source
+        processes: list[subprocess.Popen | None] = []
+        found = False
+        with self.lock:
+            for job in self.jobs.values():
+                try:
+                    same = job.source.resolve() == wanted
+                except OSError:
+                    same = job.source == source
+                if not same or job.status not in {"queued", "working"}:
+                    continue
+                found = True
+                job.cancelled = True
+                job.status = "error"
+                job.error = "兼容任务已取消"
+                job.finished_at = time.time()
+                processes.append(job.process)
+        for process in processes:
+            _terminate_process(process)
+        return found
+
     def _run(self, job: CompatJob, probe: dict) -> None:
         with self.worker:
+            if job.cancelled:
+                return
             job.status = "working"
+            streamable = job.streamable
             part = job.output.with_suffix(".part.mp4")
+            target = job.output if streamable else part
             try:
                 part.unlink(missing_ok=True)
                 job.output.unlink(missing_ok=True)
             except OSError:
                 pass
 
-            ok = self._execute(job, probe, part, job.mode)
-            if not ok and job.mode == "remux":
+            ok = self._execute(job, probe, target, job.mode)
+
+            # A stream may already be playing from this output. Do not silently
+            # switch a TS fast-start session into a full transcode after failure.
+            if not ok and not job.cancelled and job.mode == "remux" and not streamable:
                 job.mode = "transcode"
                 job.progress = 0.0
+                job.error = ""
                 try:
                     part.unlink(missing_ok=True)
                 except OSError:
                     pass
                 ok = self._execute(job, probe, part, "transcode")
 
+            if job.cancelled:
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return
+
             if ok:
                 try:
-                    os.replace(part, job.output)
+                    if not streamable:
+                        os.replace(part, job.output)
                     job.status = "ready"
                     job.progress = 100.0
                     job.finished_at = time.time()
@@ -119,9 +224,9 @@ class CompatManager:
             else:
                 job.status = "error"
                 if not job.error:
-                    job.error = "FFmpeg 无法生成浏览器兼容版本"
+                    job.error = "TS 快速封装失败，请使用系统播放器或重新尝试兼容播放" if streamable else "FFmpeg 无法生成浏览器兼容版本"
                 try:
-                    part.unlink(missing_ok=True)
+                    target.unlink(missing_ok=True)
                 except OSError:
                     pass
 
@@ -130,20 +235,43 @@ class CompatManager:
         if not exe:
             job.error = "FFmpeg 不可用"
             return False
+        if job.cancelled:
+            return False
 
-        command = [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(job.source), "-map", "0:v:0", "-map", "0:a:0?"]
+        ext = job.source.suffix.lower()
+        streamable = ext == ".ts" and mode == "remux"
+        command = [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+        if ext == ".ts":
+            command += ["-fflags", "+genpts+discardcorrupt"]
+        command += ["-i", str(job.source), "-map", "0:v:0", "-map", "0:a:0?"]
+
+        audio_codec = str(probe.get("audioCodec", "")).lower()
         if mode == "remux":
             command += ["-c:v", "copy"]
-            if str(probe.get("audioCodec", "")).lower() == "aac":
+            if audio_codec == "aac":
                 command += ["-c:a", "copy"]
+                if ext == ".ts":
+                    command += ["-bsf:a", "aac_adtstoasc"]
+            elif audio_codec in {"", "none", "unknown"}:
+                command += ["-an"]
             else:
                 command += ["-c:a", "aac", "-b:a", "160k"]
         else:
             command += [
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-threads", "2",
                 "-c:a", "aac", "-b:a", "160k",
             ]
-        command += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(output)]
+            if audio_codec not in {"", "none", "unknown"}:
+                command += ["-af", "aresample=async=1:first_pts=0"]
+            command += ["-fps_mode", "vfr"]
+
+        movflags = "+frag_keyframe+empty_moov+default_base_moof" if streamable else "+faststart"
+        command += [
+            "-avoid_negative_ts", "make_zero",
+            "-max_muxing_queue_size", "2048",
+            "-movflags", movflags,
+            "-progress", "pipe:1", "-nostats", str(output),
+        ]
 
         kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", bufsize=1)
         if os.name == "nt":
@@ -151,11 +279,13 @@ class CompatManager:
 
         try:
             process = subprocess.Popen(command, **kwargs)
+            job.process = process
         except OSError as exc:
             job.error = str(exc)
             return False
 
         duration = float(job.duration or 0.0)
+        source_size = float(job.source_size or 0)
         stderr_chunks: list[str] = []
 
         def drain_stderr() -> None:
@@ -163,8 +293,9 @@ class CompatManager:
                 return
             try:
                 for line in process.stderr:
-                    if len(stderr_chunks) < 20:
-                        stderr_chunks.append(line.strip())
+                    if len(stderr_chunks) >= 24:
+                        stderr_chunks.pop(0)
+                    stderr_chunks.append(line.strip())
             except Exception:
                 pass
 
@@ -174,6 +305,9 @@ class CompatManager:
         try:
             if process.stdout is not None:
                 for line in process.stdout:
+                    if job.cancelled:
+                        _terminate_process(process)
+                        break
                     key, sep, value = line.strip().partition("=")
                     if not sep:
                         continue
@@ -183,21 +317,28 @@ class CompatManager:
                             job.progress = min(99.0, max(job.progress, micros / 1_000_000.0 / duration * 100.0))
                         except ValueError:
                             pass
+                    elif key == "total_size" and mode == "remux" and source_size > 0:
+                        try:
+                            job.progress = min(98.5, max(job.progress, float(value) / source_size * 100.0))
+                        except ValueError:
+                            pass
                     elif key == "progress" and value == "end":
                         job.progress = 99.5
             code = process.wait()
-            stderr_thread.join(timeout=0.4)
+            stderr_thread.join(timeout=0.5)
         except Exception as exc:
-            try:
-                process.kill()
-            except OSError:
-                pass
-            job.error = str(exc)
+            _terminate_process(process)
+            if not job.cancelled:
+                job.error = str(exc)
             return False
+        finally:
+            job.process = None
 
+        if job.cancelled:
+            return False
         if code != 0:
-            message = " · ".join(x for x in stderr_chunks[-4:] if x)
-            job.error = message[-500:] if message else f"FFmpeg 返回 {code}"
+            message = " · ".join(x for x in stderr_chunks[-6:] if x)
+            job.error = message[-700:] if message else f"FFmpeg 返回 {code}"
             return False
         return output.exists() and output.stat().st_size > 1024
 
@@ -210,6 +351,46 @@ def install(server_module) -> None:
         manager = CompatManager(store.root)
 
         class CompatHandler(BaseHandler):
+            def _stream_growing_ts(self, job: CompatJob):
+                # When the job has already completed, normal ranged serving is
+                # preferable because seeking works exactly like any other MP4.
+                if job.status == "ready":
+                    return self._serve_media(job.output)
+                if job.status not in {"queued", "working"}:
+                    self.send_error(404)
+                    return
+
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-LocalHub-Compat", "ts-fast-start")
+                self.send_header("Connection", "close")
+                self.end_headers()
+
+                try:
+                    with job.output.open("rb") as source:
+                        while True:
+                            chunk = source.read(256 * 1024)
+                            if chunk:
+                                self.wfile.write(chunk)
+                                self.wfile.flush()
+                                continue
+                            if job.status == "ready":
+                                # Drain bytes written between the last EOF and the
+                                # final status update, then finish the response.
+                                tail = source.read(256 * 1024)
+                                if tail:
+                                    self.wfile.write(tail)
+                                    self.wfile.flush()
+                                    continue
+                                break
+                            if job.status == "error" or job.cancelled:
+                                break
+                            time.sleep(0.05)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                self.close_connection = True
+
             def do_POST(self):
                 parsed = urllib.parse.urlsplit(self.path)
                 if parsed.path == "/api/compat/start":
@@ -218,6 +399,13 @@ def install(server_module) -> None:
                         media = store.resolve_media(str(payload.get("path", "")))
                         result = manager.start(media, str(payload.get("mode", "")) or None)
                         return self._send_json({"ok": True, "job": result})
+                    except (ValueError, FileNotFoundError) as exc:
+                        return self._send_json({"ok": False, "error": str(exc)}, 400)
+                if parsed.path == "/api/compat/cancel":
+                    try:
+                        payload = self._read_json()
+                        media = store.resolve_media(str(payload.get("path", "")))
+                        return self._send_json({"ok": True, "cancelled": manager.cancel_source(media)})
                     except (ValueError, FileNotFoundError) as exc:
                         return self._send_json({"ok": False, "error": str(exc)}, 400)
                 if parsed.path == "/api/compat/open-system":
@@ -252,6 +440,12 @@ def install(server_module) -> None:
                         self.send_error(404)
                         return
                     return self._send_json({"ok": True, "job": result})
+                if parsed.path == "/api/compat/stream":
+                    job = manager.stream_job(query.get("id", [""])[0])
+                    if not job:
+                        self.send_error(404)
+                        return
+                    return self._stream_growing_ts(job)
                 if parsed.path == "/api/compat/file":
                     job_id = query.get("id", [""])[0]
                     output = manager.output_for(job_id)
