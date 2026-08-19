@@ -8,10 +8,15 @@
   const compatBtn = $('#compatBtn');
   const playMode = $('#playMode');
   const toast = $('#toast');
+  const notice = $('#playerNotice');
+  const noticeTitle = $('#playerNoticeTitle');
+  const noticeText = $('#playerNoticeText');
+  const noticeProgress = $('#compatProgress');
   if (!video || !viewer || !pathNode || !compatBtn) return;
 
   let session = 0;
   let jobId = '';
+  let activePath = '';
   let aborter = null;
   let objectUrl = '';
   let mediaSource = null;
@@ -20,6 +25,7 @@
   let queueBytes = 0;
   let streamDone = false;
   let starting = false;
+  let fataling = false;
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const currentPath = () => String(pathNode.textContent || '').trim();
@@ -28,7 +34,7 @@
     toast.textContent = text;
     toast.classList.add('show');
     clearTimeout(showToast.t);
-    showToast.t = setTimeout(() => toast.classList.remove('show'), 2200);
+    showToast.t = setTimeout(() => toast.classList.remove('show'), 2600);
   };
   const api = async (url, opt = {}) => {
     const response = await fetch(url, {cache:'no-store', ...opt});
@@ -51,6 +57,26 @@
   }
   const mseBtn = installButton();
 
+  function setStatus(title, text = '', progress = null) {
+    if (!notice || !noticeTitle || !noticeText) return;
+    noticeTitle.textContent = title;
+    noticeText.textContent = text;
+    notice.classList.remove('hidden');
+    if (!noticeProgress) return;
+    const bar = noticeProgress.querySelector('i');
+    if (progress == null) {
+      noticeProgress.classList.add('hidden');
+    } else {
+      noticeProgress.classList.remove('hidden');
+      if (bar) bar.style.width = `${Math.max(0, Math.min(100, Number(progress) || 0))}%`;
+    }
+  }
+
+  function clearMSEStatus() {
+    if (!notice || !noticeTitle) return;
+    if (/^MSE/.test(String(noticeTitle.textContent || ''))) notice.classList.add('hidden');
+  }
+
   function setMode(active) {
     video.toggleAttribute('data-localhub-mse', active);
     mseBtn.classList.toggle('recommended', active);
@@ -60,7 +86,7 @@
     }
   }
 
-  async function cancelSession(cancelJob = true) {
+  async function cancelSession(cancelJob = true, keepStatus = false) {
     session++;
     starting = false;
     streamDone = false;
@@ -70,6 +96,7 @@
     aborter = null;
     const oldJob = jobId;
     jobId = '';
+    activePath = '';
     if (sourceBuffer) {
       try { sourceBuffer.abort(); } catch {}
     }
@@ -82,12 +109,23 @@
     setMode(false);
     mseBtn.disabled = false;
     mseBtn.textContent = 'MSE 试播';
+    if (!keepStatus) clearMSEStatus();
     if (cancelJob && oldJob) {
       fetch('/api/mse/cancel', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({id:oldJob}), cache:'no-store', keepalive:true
       }).catch(() => {});
     }
+  }
+
+  async function failSession(message) {
+    if (fataling) return;
+    fataling = true;
+    const text = String(message || '未知错误');
+    setStatus('MSE 试播失败', text);
+    showToast(`MSE 失败：${text}`);
+    await cancelSession(true, true);
+    fataling = false;
   }
 
   function concatChunks(chunks, total) {
@@ -145,7 +183,7 @@
           try { sourceBuffer.remove(0, cutoff); return; } catch {}
         }
       }
-      throw e;
+      void failSession(`SourceBuffer：${e?.message || e}`);
     }
   }
 
@@ -162,7 +200,9 @@
     while (mine === session) {
       const data = await api(`/api/mse/status?id=${encodeURIComponent(id)}`);
       const job = data.job || {};
-      mseBtn.textContent = `MSE ${Math.round(Number(job.progress)||0)}%`;
+      const pct = Math.round(Number(job.progress) || 0);
+      mseBtn.textContent = `MSE ${pct}%`;
+      setStatus('MSE 正在准备', `正在生成浏览器可直接接收的 fMP4 分片 · ${pct}%`, pct);
       if (job.status === 'error') throw new Error(job.error || 'MSE 生成失败');
       if (job.streamReady && job.url) return job;
       if (Date.now() - started > 30000) throw new Error('MSE 首段生成超时');
@@ -174,6 +214,7 @@
   async function startMSE() {
     if (starting || !viewer.open) return;
     if (!('MediaSource' in window)) {
+      setStatus('MSE 试播失败', '当前浏览器不支持 MediaSource');
       showToast('当前浏览器不支持 MediaSource');
       return;
     }
@@ -182,9 +223,11 @@
 
     await cancelSession(true);
     const mine = session;
+    activePath = path;
     starting = true;
     mseBtn.disabled = true;
     mseBtn.textContent = 'MSE 准备中';
+    setStatus('MSE 正在准备', `正在检查 ${path}`, 0);
     const resume = Math.max(0, video.currentTime || 0);
     const wasPaused = video.paused;
     const rate = video.playbackRate || 1;
@@ -192,12 +235,6 @@
     const muted = video.muted;
 
     try {
-      // Do not let an older compat/remux experiment keep running in parallel.
-      fetch('/api/compat/cancel', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({path}), cache:'no-store'
-      }).catch(() => {});
-
       const started = await api('/api/mse/start', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({path})
@@ -241,7 +278,7 @@
       sourceBuffer = mediaSource.addSourceBuffer(mime);
       sourceBuffer.mode = 'segments';
       sourceBuffer.addEventListener('updateend', pump);
-      sourceBuffer.addEventListener('error', () => showToast('MSE SourceBuffer 解码失败'));
+      sourceBuffer.addEventListener('error', () => { void failSession('SourceBuffer 解码失败'); });
 
       const first = concatChunks(initial, initialBytes);
       queue.push(first); queueBytes += first.byteLength; pump();
@@ -261,6 +298,7 @@
       };
       video.addEventListener('loadedmetadata', restore);
       video.play().catch(() => {});
+      setStatus('MSE 试播中', `MediaSource 已接管 · ${mime}`);
       showToast('MSE 实验播放已启动');
 
       while (mine === session) {
@@ -276,10 +314,7 @@
         maybeEnd();
       }
     } catch (e) {
-      if (mine === session) {
-        showToast(e?.message || 'MSE 试播失败');
-        await cancelSession(true);
-      }
+      if (mine === session) await failSession(e?.message || 'MSE 试播失败');
     } finally {
       if (mine === session) {
         starting = false;
@@ -292,6 +327,9 @@
   mseBtn.addEventListener('click', () => { void startMSE(); });
   viewer.addEventListener('close', () => { void cancelSession(true); });
   new MutationObserver(() => {
-    if (jobId && currentPath()) void cancelSession(true);
+    const nextPath = currentPath();
+    if ((jobId || starting || video.hasAttribute('data-localhub-mse')) && activePath && nextPath && nextPath !== activePath) {
+      void cancelSession(true);
+    }
   }).observe(pathNode, {subtree:true, childList:true, characterData:true});
 })();
