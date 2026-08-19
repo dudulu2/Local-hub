@@ -6,6 +6,7 @@ from pathlib import Path
 import launcher as base
 import mse_support
 import repair_support
+import repair_page_support
 
 
 _original_configure_server = base.configure_server
@@ -24,6 +25,7 @@ def configure_server_with_mse(root: Path):
     # it and only runs when the user explicitly presses 修复播放.
     mse_support.install(server)
     repair_support.install(server)
+    repair_page_support.install(server)
     return server
 
 
