@@ -3,13 +3,10 @@
 
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
-  let moveMode = false;
-  let selectedPath = '';
-  let draggingPath = '';
-  let moveBusy = false;
-
   const LONG_PRESS_MS = 480;
-  const LONG_PRESS_SLOP = 10;
+  const LONG_PRESS_SLOP = 16;
+  const RESTORE_KEY = 'localhub:move-restore-view';
+
   let pressTimer = 0;
   let pressCard = null;
   let pressPointerId = null;
@@ -17,6 +14,8 @@
   let pressStartY = 0;
   let pressActive = false;
   let pressDropNode = null;
+  let movingPath = '';
+  let moveBusy = false;
   let suppressClickUntil = 0;
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -73,7 +72,6 @@
       else if (pageTitle && pageTitle !== '首页') document.title = `${pageTitle} · LocalHub`;
       else document.title = 'LocalHub · 本地媒体库';
     };
-
     const observer = new MutationObserver(updateTitle);
     const page = $('#pageTitle'), viewerTitle = $('#viewerTitle'), viewer = $('#viewer');
     if (page) observer.observe(page, {subtree:true, childList:true, characterData:true});
@@ -87,93 +85,38 @@
     const style = document.createElement('style');
     style.id = 'localhubMoveStyles';
     style.textContent = `
-      #moveModeBtn,#rescanBtn{display:none!important}
-      .move-guide{position:fixed;z-index:45;right:22px;top:76px;display:none;align-items:center;gap:9px;padding:8px 11px;border:1px solid #34343a;border-radius:9px;background:rgba(18,18,20,.94);backdrop-filter:blur(10px);box-shadow:0 10px 30px rgba(0,0,0,.28);font-size:11px;color:#a2a2a9;pointer-events:none}
+      #moveModeBtn,#rescanBtn,#viewerMoveBtn{display:none!important}
+      .move-guide{position:fixed;z-index:60;right:22px;top:76px;display:none;align-items:center;gap:9px;padding:8px 11px;border:1px solid #34343a;border-radius:9px;background:rgba(18,18,20,.96);backdrop-filter:blur(10px);box-shadow:0 10px 30px rgba(0,0,0,.28);font-size:11px;color:#a2a2a9;pointer-events:none}
       .move-guide strong{color:#d7d7dc;font-size:11px}
       body.move-mode .move-guide{display:flex}
-      body.move-mode .card[data-id]{cursor:grab;user-select:none}
-      body.move-mode .card[data-id]:active{cursor:grabbing}
-      body.move-mode .card[data-id] .thumb{outline:1px solid transparent;outline-offset:2px;transition:outline-color .12s,transform .12s}
-      body.move-mode .card[data-id]:hover .thumb{outline-color:#5e4524}
-      body.move-mode .card.move-selected .thumb{outline:2px solid #a06b23;transform:translateY(-2px)}
-      body.move-mode .card.move-selected::before{content:'已选择';position:absolute;right:8px;top:8px;z-index:8;background:#1c160e;color:#e0b56e;border:1px solid #6a4a1d;border-radius:6px;padding:3px 6px;font-size:9px;font-weight:800}
-      body.move-mode .card.move-dragging{opacity:.55}
+      body.move-mode .card[data-id]{user-select:none}
       body.move-mode .folder-nav button,body.move-mode .main-nav button[data-route="root"]{position:relative;border:1px dashed transparent}
-      body.move-mode .folder-nav button::after,body.move-mode .main-nav button[data-route="root"]::after{content:'放这里';margin-left:auto;font-size:9px;color:#5e5e65;opacity:.65}
-      body.move-mode .folder-nav button:hover,body.move-mode .main-nav button[data-route="root"]:hover,body.move-mode .move-drop-hover{border-color:#6c4b20!important;background:#21190f!important;color:#f2d19e!important}
-      body.move-mode .move-drop-hover::after{content:'松开移动'!important;color:#e8b86d!important;opacity:1!important}
-      body.move-busy .card[data-id]{pointer-events:none;opacity:.7}
-      .card.longpress-source .thumb{outline:2px solid #a06b23!important;transform:translateY(-2px)}
-      .viewer-actions #viewerMoveBtn{color:#b7b7bd}
-      .viewer-actions #viewerMoveBtn:hover{color:#fff;border-color:#55555c}
-      .manage-panel div:has(#moveInput),#moveBtn{display:none!important}
+      body.move-mode .folder-nav button::after,body.move-mode .main-nav button[data-route="root"]::after{content:'松开移动';margin-left:auto;font-size:9px;color:#777780}
+      body.move-mode .move-drop-hover{border-color:#6c4b20!important;background:#21190f!important;color:#f2d19e!important}
+      body.move-mode .move-drop-hover::after{color:#e8b86d!important}
+      body.move-busy .card[data-id]{pointer-events:none;opacity:.72}
+      .card.longpress-source .thumb{outline:2px solid #a06b23!important;outline-offset:2px;transform:translateY(-2px)}
+      .card.longpress-source{cursor:grabbing!important}
       @media(max-width:900px){.move-guide{left:12px;right:12px;top:auto;bottom:18px;justify-content:center}}
     `;
     document.head.appendChild(style);
   }
 
-  function ensureMoveUi() {
-    const rescan = $('#rescanBtn');
-    if (rescan && !$('#moveModeBtn')) {
-      const btn = document.createElement('button');
-      btn.className = 'top-btn move-mode-btn';
-      btn.id = 'moveModeBtn';
-      btn.type = 'button';
-      btn.textContent = '移动位置';
-      btn.title = '内部移动模式开关';
-      btn.tabIndex = -1;
-      btn.setAttribute('aria-hidden', 'true');
-      rescan.parentElement?.insertBefore(btn, rescan);
-      btn.addEventListener('click', () => setMoveMode(!moveMode));
-    }
-
-    if (!$('.move-guide')) {
-      const guide = document.createElement('div');
-      guide.className = 'move-guide';
-      guide.innerHTML = '<strong>移动位置</strong><span>长按视频后拖到左侧文件夹，或松开后点击目标文件夹</span>';
-      document.body.appendChild(guide);
-    }
-
-    const actions = $('.viewer-actions');
-    if (actions && !$('#viewerMoveBtn')) {
-      const btn = document.createElement('button');
-      btn.id = 'viewerMoveBtn';
-      btn.type = 'button';
-      btn.textContent = '移动位置';
-      btn.title = '选择当前视频，然后点左侧目标文件夹';
-      const manage = $('#manageBtn');
-      actions.insertBefore(btn, manage || null);
-      btn.addEventListener('click', () => {
-        const path = ($('#viewerPath')?.textContent || '').trim();
-        if (!path) return;
-        selectedPath = path;
-        $('#closeViewer')?.click();
-        setMoveMode(true, true);
-        decorateCards();
-        const card = $$('.card[data-id]').find(node => node.dataset.id === path);
-        if (card) {
-          card.classList.add('move-selected');
-          card.scrollIntoView({behavior:'smooth', block:'center'});
-        }
-        updateGuide(`已选择 ${fileName(path)}，点击左侧目标文件夹 · Esc 取消`);
-      });
-    }
+  function ensureGuide() {
+    if ($('.move-guide')) return;
+    const guide = document.createElement('div');
+    guide.className = 'move-guide';
+    guide.innerHTML = '<strong>移动位置</strong><span>按住并拖到左侧文件夹；松开即结束</span>';
+    document.body.appendChild(guide);
   }
 
-  function updateGuide(text = '') {
-    const guide = $('.move-guide span');
-    if (!guide) return;
-    guide.textContent = text || (selectedPath ? `已选择 ${fileName(selectedPath)}，点击左侧目标文件夹 · Esc 取消` : '长按视频后拖到左侧文件夹，或松开后点击目标文件夹');
+  function setGuide(text) {
+    const el = $('.move-guide span');
+    if (el) el.textContent = text || '按住并拖到左侧文件夹；松开即结束';
   }
 
   function fileName(path) {
-    return String(path || '').replace(/\\/g,'/').split('/').pop() || path;
-  }
-
-  function sourceFolder(path) {
-    const parts = String(path || '').replace(/\\/g,'/').split('/');
-    parts.pop();
-    return parts.join('/');
+    return String(path || '').replace(/\\/g, '/').split('/').pop() || path;
   }
 
   function destinationFrom(node) {
@@ -184,45 +127,30 @@
     return null;
   }
 
-  function setMoveMode(on, keepSelection = false) {
-    moveMode = !!on;
-    if (!moveMode && !keepSelection) selectedPath = '';
-    draggingPath = '';
-    document.body.classList.toggle('move-mode', moveMode);
-    document.body.classList.remove('is-dragging');
-    const btn = $('#moveModeBtn');
-    if (btn) {
-      btn.classList.toggle('active', moveMode);
-      btn.textContent = moveMode ? '完成移动' : '移动位置';
-      btn.setAttribute('aria-pressed', moveMode ? 'true' : 'false');
-    }
-    decorateCards();
-    updateGuide();
-  }
-
-  function decorateCards() {
-    $$('.card[data-id]').forEach(card => {
-      card.draggable = moveMode && !(pressActive && card === pressCard);
-      card.classList.toggle('move-selected', moveMode && !!selectedPath && card.dataset.id === selectedPath);
-      if (moveMode) card.title = '拖到左侧文件夹即可移动';
-      else if (card.title === '拖到左侧文件夹即可移动') card.removeAttribute('title');
-    });
+  function pageNumber() {
+    const text = ($('#pageInfo')?.textContent || '').trim();
+    const m = text.match(/第\s*(\d+)/);
+    return m ? Math.max(1, Number(m[1]) || 1) : 1;
   }
 
   function snapshotView() {
     const folder = $('.folder-nav button.active');
-    const route = $('.main-nav button.active')?.dataset.route || '';
+    const route = $('.main-nav button.active')?.dataset.route || 'home';
     const query = ($('#searchInput')?.value || '').trim();
-    const title = ($('#pageTitle')?.textContent || '').trim();
-    return {folder: folder ? folder.dataset.folder : null, route: route || (title === '根目录' ? 'root' : ''), query};
+    return {
+      route,
+      folder: folder ? folder.dataset.folder : null,
+      query,
+      page: pageNumber(),
+      scrollY: Math.max(0, window.scrollY || 0),
+    };
   }
 
   function migrateLocalState(oldId, newId) {
     if (!oldId || !newId || oldId === newId) return;
     try {
       const fav = JSON.parse(localStorage.getItem('localhub:favorites') || '[]');
-      const mapped = fav.map(id => id === oldId ? newId : id);
-      localStorage.setItem('localhub:favorites', JSON.stringify([...new Set(mapped)]));
+      localStorage.setItem('localhub:favorites', JSON.stringify([...new Set(fav.map(id => id === oldId ? newId : id))]));
       const progress = JSON.parse(localStorage.getItem('localhub:progress') || '{}');
       if (progress[oldId]) {
         progress[newId] = progress[oldId];
@@ -232,54 +160,75 @@
     } catch {}
   }
 
-  async function waitForRescan(btn) {
-    const deadline = Date.now() + 20000;
-    await sleep(50);
-    while (Date.now() < deadline) {
-      if (!btn.disabled && !/扫描中/.test(btn.textContent || '')) return;
-      await sleep(100);
+  function waitFor(predicate, timeout = 4000) {
+    return new Promise(resolve => {
+      const start = Date.now();
+      const tick = () => {
+        let ok = false;
+        try { ok = !!predicate(); } catch {}
+        if (ok || Date.now() - start >= timeout) return resolve(ok);
+        setTimeout(tick, 70);
+      };
+      tick();
+    });
+  }
+
+  async function restorePage(page) {
+    const target = Math.max(1, Number(page) || 1);
+    if (target <= 1) return;
+    await waitFor(() => pageNumber() === 1 || !$('#pager')?.classList.contains('hidden'), 3000);
+    for (let p = 2; p <= target; p++) {
+      const next = $('#nextPage');
+      if (!next || next.disabled) break;
+      next.click();
+      const reached = await waitFor(() => pageNumber() === p, 4000);
+      if (!reached) break;
     }
   }
 
-  async function refreshPreservingView(view) {
-    const rescan = $('#rescanBtn');
-    if (!rescan) { location.reload(); return; }
-    rescan.click();
-    await waitForRescan(rescan);
-    await sleep(100);
+  async function restorePendingView() {
+    let view = null;
+    try {
+      view = JSON.parse(sessionStorage.getItem(RESTORE_KEY) || 'null');
+      sessionStorage.removeItem(RESTORE_KEY);
+    } catch {
+      sessionStorage.removeItem(RESTORE_KEY);
+    }
+    if (!view) return;
+
+    await waitFor(() => $('#grid') && $('.main-nav button[data-route="home"]'), 3000);
+    await sleep(180);
 
     if (view.query) {
       const input = $('#searchInput');
       if (input) {
         input.value = view.query;
         input.dispatchEvent(new Event('input', {bubbles:true}));
-        return;
+        await sleep(360);
+        await restorePage(view.page);
       }
-    }
-
-    if (view.folder !== null) {
-      const target = $$('.folder-nav button').find(node => node.dataset.folder === view.folder);
-      if (target) { target.click(); return; }
-    }
-
-    if (view.route && view.route !== 'home') {
+    } else if (view.folder !== null) {
+      const found = await waitFor(() => $$('.folder-nav button').some(n => n.dataset.folder === view.folder), 3500);
+      if (found) {
+        const target = $$('.folder-nav button').find(n => n.dataset.folder === view.folder);
+        target?.click();
+        await sleep(180);
+        await restorePage(view.page);
+      }
+    } else if (view.route && view.route !== 'home') {
       const target = $(`.main-nav button[data-route="${CSS.escape(view.route)}"]`);
-      if (target) { target.click(); return; }
+      target?.click();
+      await sleep(180);
+      await restorePage(view.page);
     }
+
+    setTimeout(() => window.scrollTo({top:Number(view.scrollY)||0,left:0,behavior:'instant'}), 80);
   }
 
-  async function moveNow(path, folder) {
-    if (!moveMode || moveBusy || !path || folder === null) return;
-    if (sourceFolder(path) === folder) {
-      toast('已经在这个分类里');
-      setMoveMode(false);
-      return;
-    }
-
-    const view = snapshotView();
+  async function moveNow(path, folder, view) {
+    if (moveBusy || !path || folder === null) return;
     moveBusy = true;
     document.body.classList.add('move-busy');
-    updateGuide(`正在移动 ${fileName(path)}…`);
     try {
       const d = await api('/api/manage', {
         method:'POST',
@@ -289,34 +238,45 @@
       const moved = d.moved?.[0];
       if (!moved) throw new Error('移动失败');
       migrateLocalState(path, moved.new);
-      selectedPath = '';
-      draggingPath = '';
-      $$('.move-drop-hover').forEach(n => n.classList.remove('move-drop-hover'));
-      toast(`已移动到 ${folder || '根目录'}`);
-      setMoveMode(false);
-      await refreshPreservingView(view);
+
+      // The physical rename is already complete at this point. Refresh the
+      // smart catalog directly, then reload once so home/list/favorites and
+      // every in-memory id all agree with the new path.
+      await api('/api/smart/rescan');
+      try { sessionStorage.setItem(RESTORE_KEY, JSON.stringify(view || snapshotView())); } catch {}
+      location.reload();
     } catch (e) {
-      toast(e.message || '移动失败');
-    } finally {
       moveBusy = false;
-      document.body.classList.remove('move-busy','is-dragging');
-      decorateCards();
-      updateGuide();
+      document.body.classList.remove('move-busy');
+      toast(e.message || '移动失败');
     }
   }
 
-  function clearPress(resetSelection = false) {
+  function clearDropHighlight() {
+    $$('.move-drop-hover').forEach(n => n.classList.remove('move-drop-hover'));
+    pressDropNode = null;
+  }
+
+  function endPressVisual() {
     clearTimeout(pressTimer);
     pressTimer = 0;
-    if (pressCard) pressCard.classList.remove('longpress-source','move-dragging');
-    $$('.move-drop-hover').forEach(n => n.classList.remove('move-drop-hover'));
+    if (pressCard) {
+      pressCard.classList.remove('longpress-source');
+      try {
+        if (pressPointerId !== null && pressCard.hasPointerCapture?.(pressPointerId)) pressCard.releasePointerCapture(pressPointerId);
+      } catch {}
+    }
     pressCard = null;
     pressPointerId = null;
-    pressDropNode = null;
     pressActive = false;
-    document.body.classList.remove('is-dragging');
-    if (resetSelection && moveMode) setMoveMode(false);
-    else decorateCards();
+    movingPath = '';
+    clearDropHighlight();
+    document.body.classList.remove('move-mode','is-dragging');
+    setGuide('按住并拖到左侧文件夹；松开即结束');
+  }
+
+  function cancelPress() {
+    endPressVisual();
   }
 
   function dropNodeAt(x, y) {
@@ -331,34 +291,31 @@
   function activateLongPress() {
     const card = pressCard;
     const path = card?.dataset.id || '';
-    if (!card || !path || moveBusy || moveMode) return;
+    if (!card || !path || moveBusy) return;
     pressTimer = 0;
     pressActive = true;
-    selectedPath = path;
-    draggingPath = path;
-    setMoveMode(true, true);
-    pressCard = card;
-    draggingPath = path;
-    card.draggable = false;
-    card.classList.add('longpress-source','move-selected','move-dragging');
-    document.body.classList.add('is-dragging');
+    movingPath = path;
+    card.classList.add('longpress-source');
+    document.body.classList.add('move-mode','is-dragging');
     suppressClickUntil = Date.now() + 900;
     try { navigator.vibrate?.(28); } catch {}
-    updateGuide(`正在移动 ${fileName(path)}：拖到左侧文件夹松开，或松开后再点目标文件夹`);
+    setGuide(`正在移动 ${fileName(path)}：拖到左侧文件夹后松开；松开即取消`);
   }
 
   document.addEventListener('pointerdown', e => {
-    if (moveMode || moveBusy || e.isPrimary === false) return;
+    if (moveBusy || e.isPrimary === false) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const card = e.target.closest?.('.card[data-id]');
     if (!card || e.target.closest?.('button,input,select,a')) return;
     const path = card.dataset.id || '';
     if (!path) return;
-    clearPress(false);
+
+    cancelPress();
     pressCard = card;
     pressPointerId = e.pointerId;
     pressStartX = e.clientX;
     pressStartY = e.clientY;
+    try { card.setPointerCapture?.(e.pointerId); } catch {}
     pressTimer = setTimeout(activateLongPress, LONG_PRESS_MS);
   }, true);
 
@@ -366,7 +323,7 @@
     if (!pressCard || e.pointerId !== pressPointerId) return;
     if (!pressActive) {
       const dx = e.clientX - pressStartX, dy = e.clientY - pressStartY;
-      if (Math.hypot(dx, dy) > LONG_PRESS_SLOP) clearPress(false);
+      if (Math.hypot(dx, dy) > LONG_PRESS_SLOP) cancelPress();
       return;
     }
     if (e.cancelable) e.preventDefault();
@@ -378,32 +335,28 @@
     clearTimeout(pressTimer);
     pressTimer = 0;
     if (!pressActive) {
-      pressCard = null;
-      pressPointerId = null;
+      cancelPress();
       return;
     }
+
     if (e.cancelable) e.preventDefault();
     suppressClickUntil = Date.now() + 900;
-    const path = selectedPath;
+    const path = movingPath;
+    const view = snapshotView();
     const node = dropNodeAt(e.clientX, e.clientY) || pressDropNode;
     const destination = destinationFrom(node);
-    const source = pressCard;
-    source?.classList.remove('longpress-source','move-dragging');
-    pressCard = null;
-    pressPointerId = null;
-    pressDropNode = null;
-    pressActive = false;
-    draggingPath = '';
-    document.body.classList.remove('is-dragging');
-    $$('.move-drop-hover').forEach(n => n.classList.remove('move-drop-hover'));
-    decorateCards();
-    if (destination !== null && path) moveNow(path, destination);
-    else updateGuide(`已选择 ${fileName(path)}，点击左侧目标文件夹 · Esc 取消`);
+
+    // One-shot interaction: every pointer release leaves move mode. A valid
+    // folder performs the move; any other release simply cancels it.
+    endPressVisual();
+    if (destination !== null && path) {
+      void moveNow(path, destination, view);
+    }
   }, {capture:true, passive:false});
 
   document.addEventListener('pointercancel', e => {
     if (!pressCard || e.pointerId !== pressPointerId) return;
-    clearPress(pressActive);
+    cancelPress();
   }, true);
 
   document.addEventListener('contextmenu', e => {
@@ -413,103 +366,14 @@
     }
   }, true);
 
-  document.addEventListener('dragstart', e => {
-    if (!moveMode) return;
-    const card = e.target.closest?.('.card[data-id]');
-    if (!card) return;
-    const path = card.dataset.id;
-    if (!path) return;
-    draggingPath = path;
-    selectedPath = path;
-    card.classList.add('move-dragging','move-selected');
-    document.body.classList.add('is-dragging');
-    try {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', path);
-      e.dataTransfer.setData('application/x-localhub-path', path);
-    } catch {}
-    updateGuide(`正在拖动 ${fileName(path)}，放到左侧目标文件夹`);
-  }, true);
-
-  document.addEventListener('dragend', e => {
-    e.target.closest?.('.card[data-id]')?.classList.remove('move-dragging');
-    draggingPath = '';
-    document.body.classList.remove('is-dragging');
-    $$('.move-drop-hover').forEach(n => n.classList.remove('move-drop-hover'));
-    decorateCards();
-    updateGuide();
-  }, true);
-
-  document.addEventListener('dragover', e => {
-    if (!moveMode || !draggingPath) return;
-    const destination = destinationFrom(e.target);
-    if (destination === null) return;
-    e.preventDefault();
-    try { e.dataTransfer.dropEffect = 'move'; } catch {}
-    const node = e.target.closest('.folder-nav button,.main-nav button[data-route="root"]');
-    $$('.move-drop-hover').forEach(n => { if (n !== node) n.classList.remove('move-drop-hover'); });
-    node?.classList.add('move-drop-hover');
-  }, true);
-
-  document.addEventListener('dragleave', e => {
-    const node = e.target.closest?.('.folder-nav button,.main-nav button[data-route="root"]');
-    if (node && !node.contains(e.relatedTarget)) node.classList.remove('move-drop-hover');
-  }, true);
-
-  document.addEventListener('drop', e => {
-    if (!moveMode || !draggingPath) return;
-    const destination = destinationFrom(e.target);
-    if (destination === null) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    const path = draggingPath;
-    draggingPath = '';
-    moveNow(path, destination);
-  }, true);
-
   document.addEventListener('click', e => {
-    if (Date.now() < suppressClickUntil) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      return;
-    }
-    if (!moveMode || moveBusy) return;
-
-    const destination = destinationFrom(e.target);
-    if (destination !== null && selectedPath) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      moveNow(selectedPath, destination);
-      return;
-    }
-
-    const card = e.target.closest?.('.card[data-id]');
-    if (!card) return;
-    if (e.target.closest('button,input,select,a')) return;
+    if (Date.now() >= suppressClickUntil) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    const path = card.dataset.id || '';
-    selectedPath = selectedPath === path ? '' : path;
-    decorateCards();
-    updateGuide();
   }, true);
-
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && moveMode && !$('#viewer')?.open && !$('#reader')?.open) {
-      clearPress(false);
-      setMoveMode(false);
-      toast('已退出移动模式');
-    }
-  });
-
-  const observer = new MutationObserver(() => {
-    ensureMoveUi();
-    decorateCards();
-  });
-  observer.observe(document.body, {subtree:true, childList:true});
 
   installStyles();
+  ensureGuide();
   installBranding();
-  ensureMoveUi();
-  decorateCards();
+  restorePendingView().catch(() => {});
 })();
