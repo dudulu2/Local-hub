@@ -1,14 +1,14 @@
-name: MSE1 Windows validation
+name: Timeline Repair Windows validation
 
 on:
   pull_request:
-    branches: [ci/2.2.4-mse1-build-base]
+    branches: [ci/2.2.4-timeline1-build-base]
 
 permissions:
   contents: read
 
 jobs:
-  validate-mse1:
+  validate-timeline1:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,14 +20,17 @@ jobs:
       - name: Validate sources
         shell: pwsh
         run: |
-          python -m py_compile launcher.py launcher_mse.py server.py smart_mode.py smart_thumbnail.py preview_support.py playback_priority.py io_scheduler.py media_probe.py compat_support.py mse_support.py rating_support.py recommendation_support.py catalog_cache.py tools/smoke_recommendations.py tools/smoke_exact_fit.py tools/smoke_move.py tools/smoke_mse.py tools/smoke_release.py
+          python -m py_compile launcher.py launcher_mse.py server.py smart_mode.py smart_thumbnail.py preview_support.py playback_priority.py io_scheduler.py media_probe.py compat_support.py mse_support.py repair_support.py repair_page_support.py rating_support.py recommendation_support.py catalog_cache.py tools/smoke_recommendations.py tools/smoke_exact_fit.py tools/smoke_move.py tools/smoke_mse.py tools/smoke_repair.py tools/smoke_release.py
           node --check .\smart_ui.js
           node --check .\ux_enhancements.js
           node --check .\move_branding.js
           node --check .\recommendation_ui.js
           node --check .\mse_ui.js
+          node --check .\repair_ui.js
       - name: Experiment metadata smoke test
         run: python tools/smoke_release.py
+      - name: Timeline repair smoke test
+        run: python tools/smoke_repair.py
       - name: MSE fragmented MP4 smoke test
         run: python tools/smoke_mse.py
       - name: Move and navigation smoke test
@@ -56,7 +59,7 @@ jobs:
           $env:ALL_PROXY = 'http://127.0.0.1:9'
           $env:NO_PROXY = ''
           $p = Start-Process -FilePath .\dist\LocalHub.exe -ArgumentList '--self-test' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub MSE1 self-test failed: $($p.ExitCode)" }
+          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub Timeline Repair self-test failed: $($p.ExitCode)" }
       - name: Generate SHA256
         shell: pwsh
         run: |
