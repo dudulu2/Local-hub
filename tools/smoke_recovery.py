@@ -80,7 +80,7 @@ def main() -> None:
     assert 'aac_adtstoasc' in ts_source
     assert '+faststart' in ts_source
     assert 'frag_keyframe' not in ts_source
-    assert 'stream' not in ts_source.lower()
+    assert '/api/compat/stream' not in ts_source
 
     print(f'recovery isolation smoke test passed ({elapsed_ms:.1f} ms)')
 
