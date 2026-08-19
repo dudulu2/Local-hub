@@ -54,7 +54,7 @@ def main() -> None:
         '"-c:v", "libx264"',
         '"-fps_mode", "cfr"',
         "fps=",
-        "setpts=N/(\",
+        "setpts=N/(",
         "aresample=async=1:first_pts=0",
         "/api/repair/file",
     ):
