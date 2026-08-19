@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from server import MediaStore
 from smart_mode import Catalog
@@ -31,7 +36,7 @@ def main() -> None:
         home_ids = [item["id"] for item in catalog.home()]
         assert home_ids == ["B/sample.mp4"], home_ids
 
-    js = (Path(__file__).resolve().parents[1] / "move_branding.js").read_text("utf-8")
+    js = (ROOT / "move_branding.js").read_text("utf-8")
     assert "await api('/api/smart/rescan')" in js
     assert "松开即取消" in js
     assert "点击目标文件夹" not in js
