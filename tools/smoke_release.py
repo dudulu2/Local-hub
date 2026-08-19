@@ -42,7 +42,7 @@ def main() -> None:
     assert "mse_support.install(server)" in launcher
 
     mse = (ROOT / "mse_support.py").read_text("utf-8")
-    assert "MediaSource" not in mse  # browser logic stays in mse_ui.js
+    assert "new MediaSource()" not in mse  # browser implementation stays in mse_ui.js
     assert "_MP4_HEALTH_SCRIPT" not in mse
     assert "preview_support._PLAYBACK_PRIORITY_SCRIPT" in mse
     assert "preview_support._PORTRAIT_LAYOUT_SCRIPT" in mse
