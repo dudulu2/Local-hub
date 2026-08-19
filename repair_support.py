@@ -139,7 +139,7 @@ class RepairManager:
                 "-map", "0:v:0", "-map", "0:a:0?",
                 "-vf", f"fps={fps_text},setpts=N/({fps_text}*TB)",
                 "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p",
-                "-fps_mode", "cfr", "-video_track_timescale", "90000",
+                "-r", fps_text, "-fps_mode", "cfr", "-video_track_timescale", "90000",
             ]
             if audio in {"", "none", "unknown"}:
                 command += ["-an"]
