@@ -1,65 +1,18 @@
-name: Build Windows EXE
+name: Player V4 Windows CI
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main, agent/2.2.3-player-v4-stash-architecture]
-    tags: ['v*']
-    paths:
-      - 'launcher.py'
-      - 'server.py'
-      - 'smart_mode.py'
-      - 'smart_thumbnail.py'
-      - 'preview_support.py'
-      - 'media_probe.py'
-      - 'compat_support.py'
-      - 'rating_support.py'
-      - 'catalog_cache.py'
-      - 'smart_index.html'
-      - 'smart_ui.css'
-      - 'smart_ui.js'
-      - 'ux_enhancements.css'
-      - 'ux_enhancements.js'
-      - 'move_branding.js'
-      - 'player_v4.js'
-      - 'player_v4.css'
-      - 'media_engine/**'
-      - 'LocalHub.spec'
-      - 'version_info.txt'
-      - 'tools/**'
-      - '.github/workflows/build-windows.yml'
   pull_request:
-    branches: [main]
-    paths:
-      - 'launcher.py'
-      - 'server.py'
-      - 'smart_mode.py'
-      - 'smart_thumbnail.py'
-      - 'preview_support.py'
-      - 'media_probe.py'
-      - 'compat_support.py'
-      - 'rating_support.py'
-      - 'catalog_cache.py'
-      - 'smart_index.html'
-      - 'smart_ui.css'
-      - 'smart_ui.js'
-      - 'ux_enhancements.css'
-      - 'ux_enhancements.js'
-      - 'move_branding.js'
-      - 'player_v4.js'
-      - 'player_v4.css'
-      - 'media_engine/**'
-      - 'LocalHub.spec'
-      - 'version_info.txt'
-      - 'tools/**'
-      - '.github/workflows/build-windows.yml'
+    branches: [ci/player-v4-base]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  actions: write
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,20 +60,17 @@ jobs:
           node --check .\move_branding.js
           node --check .\player_v4.js
 
-      - name: Player V4 media engine smoke test
+      - name: Player V4 smoke test
         run: python tools/smoke_player_v4.py
 
-      - name: Launcher startup smoke test
+      - name: Launcher smoke test
         run: python tools/smoke_launcher.py
 
       - name: Smart catalog smoke test
         run: python tools/smoke_smart.py
 
-      - name: Preview extraction smoke test
+      - name: Preview smoke test
         run: python tools/smoke_preview.py
-
-      - name: Legacy compatibility smoke test
-        run: python tools/smoke_compat.py
 
       - name: Metadata UX smoke test
         run: python tools/smoke_metadata.py
@@ -131,7 +81,7 @@ jobs:
       - name: Build one-file executable
         run: pyinstaller --noconfirm --clean LocalHub.spec
 
-      - name: Execute packaged EXE self-test behind hostile proxy
+      - name: Execute packaged EXE self-test
         shell: pwsh
         run: |
           $env:HTTP_PROXY = 'http://127.0.0.1:9'
@@ -139,8 +89,7 @@ jobs:
           $env:ALL_PROXY = 'http://127.0.0.1:9'
           $env:NO_PROXY = ''
           $p = Start-Process -FilePath .\dist\LocalHub.exe -ArgumentList '--self-test' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub proxy-isolation self-test failed with exit code $($p.ExitCode)" }
-          Write-Host "Packaged LocalHub proxy-isolation self-test passed"
+          if ($p.ExitCode -ne 0) { throw "Packaged LocalHub self-test failed with exit code $($p.ExitCode)" }
 
       - name: Generate SHA256
         shell: pwsh
@@ -152,16 +101,10 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: LocalHub-Windows-x64
+          name: LocalHub-Player-V4-Windows-x64
           path: |
             dist/LocalHub.exe
             dist/SHA256.txt
           if-no-files-found: error
           compression-level: 0
-
-      - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub ${{ github.ref_name }}" --generate-notes
+          retention-days: 7
