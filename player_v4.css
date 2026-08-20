@@ -1,0 +1,80 @@
+/* LocalHub Player V4: Stash-style architecture, clean-room implementation. */
+#viewer .player-shell{
+  position:relative!important;
+  height:calc(100% - 164px)!important;
+  min-height:0!important;
+  display:block!important;
+  overflow:hidden!important;
+  background:#050506!important;
+}
+#viewer .viewer-stage{
+  position:absolute!important;
+  inset:0!important;
+  width:100%!important;
+  height:100%!important;
+  min-height:0!important;
+  overflow:hidden!important;
+  display:block!important;
+  background:#050506!important;
+}
+#viewer .player-controls{display:none!important}
+#viewer .player-notice{display:none!important}
+#viewer .viewer-stage>.video-js,
+#viewer .viewer-stage .video-js{
+  position:absolute!important;
+  inset:0!important;
+  width:100%!important;
+  height:100%!important;
+  max-width:none!important;
+  max-height:none!important;
+  background:#050506!important;
+}
+#viewer .video-js .vjs-tech{
+  position:absolute!important;
+  inset:0!important;
+  width:100%!important;
+  height:100%!important;
+  object-fit:contain!important;
+  object-position:center center!important;
+  background:#050506!important;
+}
+#viewer .video-js .vjs-control-bar{
+  z-index:8;
+  display:flex;
+  background:linear-gradient(0deg,rgba(0,0,0,.88),rgba(0,0,0,.48) 58%,transparent);
+  padding-top:1.1em;
+  height:4.5em;
+}
+#viewer .video-js .vjs-progress-control{
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:3.15em;
+  width:100%;
+  height:2.1em;
+}
+#viewer .video-js .vjs-progress-holder{margin:0 14px}
+#viewer .video-js .vjs-big-play-button{
+  top:50%;left:50%;transform:translate(-50%,-50%);
+  border:0;background:rgba(0,0,0,.58);border-radius:50%;
+  width:2em;height:2em;line-height:2em;
+}
+#viewer .video-js.vjs-error .vjs-loading-spinner{display:none}
+#viewer .v4-player-status{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  z-index:7;pointer-events:none;
+  max-width:min(620px,82%);padding:10px 14px;border-radius:8px;
+  background:rgba(15,15,17,.86);border:1px solid #343439;
+  color:#c8c8cd;font-size:11px;text-align:center;
+  opacity:0;transition:opacity .12s;
+}
+#viewer .v4-player-status.show{opacity:1}
+#viewer .v4-player-status.error{color:#ffb1a8;border-color:#71403b}
+#viewer .mode-pill.v4-stream{color:#ffc164;border-color:#68481c;background:#21180e}
+@media(max-width:1050px){
+  #viewer .player-shell{height:calc(100% - 160px)!important}
+}
+@media(max-width:700px){
+  #viewer .video-js .vjs-volume-panel{display:none}
+  #viewer .video-js .vjs-playback-rate{display:none}
+}
