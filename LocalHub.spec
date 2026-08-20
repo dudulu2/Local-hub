@@ -9,7 +9,9 @@ imageio_datas, imageio_binaries, imageio_hiddenimports = collect_all('imageio_ff
 a = Analysis(
     ['launcher.py'],
     pathex=[],
-    binaries=imageio_binaries,
+    binaries=[
+        ('build_tools/localhub-media-engine.exe', '.'),
+    ] + imageio_binaries,
     datas=[
         ('smart_index.html', '.'),
         ('smart_ui.css', '.'),
@@ -17,6 +19,11 @@ a = Analysis(
         ('ux_enhancements.css', '.'),
         ('ux_enhancements.js', '.'),
         ('move_branding.js', '.'),
+        ('player_v4.js', '.'),
+        ('player_v4.css', '.'),
+        ('vendor/video.min.js', 'vendor'),
+        ('vendor/video-js.min.css', 'vendor'),
+        ('vendor/VIDEOJS-LICENSE.txt', 'vendor'),
     ] + imageio_datas,
     hiddenimports=[
         'pystray._win32',
