@@ -14,10 +14,6 @@
   const playMode = document.querySelector('#playMode');
   if (!viewer || !stage || !legacyVideo || !viewerPath) return;
 
-  // Stable 2.2.3 keeps useful library/organizer state in smart_ui.js, so V4
-  // deliberately leaves that code alive while removing its media element from
-  // the visible DOM. All legacy media listeners keep pointing at this detached
-  // node and can no longer interfere with the actual player.
   const videoEl = legacyVideo.cloneNode(false);
   videoEl.id = 'videoPlayer';
   videoEl.removeAttribute('src');
@@ -39,8 +35,6 @@
     });
   } catch {}
 
-  // Kill the old whole-file compatibility pipeline at its entrance. It remains
-  // available in the stable source tree for rollback, but is not part of V4.
   const nativeFetch = window.fetch.bind(window);
   window.fetch = (input, init = {}) => {
     const url = typeof input === 'string' ? input : (input && input.url) || '';
@@ -179,10 +173,6 @@
     };
   }
 
-  // Clean-room implementation of the same useful idea used by mature media
-  // servers: a live transcode beginning at T seconds still exposes the original
-  // full-file clock. Seeking outside the current streamed buffer restarts FFmpeg
-  // at the requested logical timestamp after a short debounce.
   videojs.use('*', function localHubOffsetMiddleware(middlewarePlayer) {
     let tech = null;
     let source = null;
@@ -277,8 +267,11 @@
       }
       pendingResume = 0;
     });
-    try { await player.play(); } catch {}
+    // Source assignment itself is complete now. Do not keep the switching guard
+    // raised while play() waits, otherwise an immediate decode error would be
+    // incorrectly suppressed instead of falling back to the live stream.
     switching = false;
+    try { await player.play(); } catch {}
   }
 
   async function switchToTranscode(startAt, reason = '') {
@@ -287,22 +280,24 @@
     sourceKind = 'transcode';
     const generation = ++streamGeneration;
     showStatus(reason || '原始格式无法直接解码，正在切换实时兼容流…');
-    setMode(transcodeMode === 'remux' ? '实时封装 · V4' : '实时转码 · V4', true);
     if (probePromise) await probePromise;
-    if (generation !== streamGeneration || !activePath) return;
+    if (generation !== streamGeneration || !activePath) {
+      switching = false;
+      return;
+    }
+    setMode(transcodeMode === 'remux' ? '实时封装 · V4' : '实时转码 · V4', true);
     try { player.error(null); } catch {}
     const start = Math.max(0, Number(startAt) || pendingResume || 0);
     player.src(makeTranscodeSource(activePath, start));
     player.load();
-    const wasPlaying = !player.paused();
     player.one('canplay', () => {
       if (generation !== streamGeneration || sourceKind !== 'transcode') return;
       hideStatus();
-      if (wasPlaying || pendingResume > 0) player.play().catch(() => {});
+      player.play().catch(() => {});
       pendingResume = 0;
     });
-    player.play().catch(() => {});
     switching = false;
+    player.play().catch(() => {});
   }
 
   function reloadTranscode(target) {
@@ -406,8 +401,6 @@
   viewerObserver.observe(viewer, { attributes: true, attributeFilter: ['open'] });
 
   viewer.addEventListener('close', () => {
-    // Stable 2.2.3 writes progress from its detached legacy element while
-    // closing. V4 writes afterwards so the real playback position wins.
     writeProgress(true);
     if (activePath) closeCurrentViewer();
   });
