@@ -69,7 +69,10 @@ function tryNativeCurrent(){
     const path=encodedCurrentPath();
     if(!path)return;
     const src=video.getAttribute('src')||'';
-    if(src && !src.includes('/api/compat/file'))return;
+    if(src && !src.includes('/api/compat/file')){
+      video.play().catch(()=>{});
+      return;
+    }
     video.src='/media/'+path;
     video.load();
     video.play().catch(()=>{});
