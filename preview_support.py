@@ -41,6 +41,7 @@ def _stop_engine() -> None:
             except Exception:
                 try:
                     process.kill()
+                    process.wait(timeout=0.5)
                 except Exception:
                     pass
         if _ENGINE_LOG is not None:
@@ -180,8 +181,20 @@ def _inject_player_v4(html: bytes) -> bytes:
 def install(server_module) -> None:
     """Install preview endpoints and Player V4 without changing the stable catalog core."""
     original_make_handler = server_module.make_handler
+    original_server_close = server_module.ThreadingHTTPServer.server_close
     video_exts = set(server_module.VIDEO_EXTS)
     app_dir = Path(server_module.APP_DIR)
+
+    # The media engine owns a log handle and a child process. Tie both to the
+    # LocalHub HTTP server lifetime so tests, restarts and tray exits release
+    # Windows file handles deterministically instead of relying only on atexit.
+    def server_close(self):
+        try:
+            _stop_engine()
+        finally:
+            return original_server_close(self)
+
+    server_module.ThreadingHTTPServer.server_close = server_close
 
     server_module.STATIC_FILES["/player_v4.js"] = app_dir / "player_v4.js"
     server_module.STATIC_FILES["/player_v4.css"] = app_dir / "player_v4.css"
