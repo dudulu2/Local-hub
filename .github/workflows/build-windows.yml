@@ -175,3 +175,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${{ github.ref_name }}" .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub ${{ github.ref_name }}" --generate-notes
+
+# CI-only touch for final stable1 validation.
