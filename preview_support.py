@@ -11,6 +11,8 @@ from http import HTTPStatus
 from pathlib import Path
 
 import media_probe
+import recommendation_support
+import smart_mode
 import smart_thumbnail
 
 HOVER_SLOTS = 6
@@ -161,33 +163,40 @@ def _start_engine(root: Path, app_dir: Path) -> str:
 
 def _inject_player_v4(html: bytes) -> bytes:
     text = html.decode("utf-8")
-    if "player_v4.js" in text:
-        return html
-    head = (
-        '<link rel="stylesheet" href="/vendor/video-js.min.css">\n'
-        '<link rel="stylesheet" href="/player_v4.css">\n'
-    )
-    body = (
-        '<script src="/vendor/video.min.js"></script>\n'
-        '<script src="/player_v4.js"></script>\n'
-    )
-    if "</head>" in text:
-        text = text.replace("</head>", head + "</head>", 1)
-    if "</body>" in text:
-        text = text.replace("</body>", body + "</body>", 1)
+    head_parts: list[str] = []
+    body_parts: list[str] = []
+    if "/vendor/video-js.min.css" not in text:
+        head_parts.append('<link rel="stylesheet" href="/vendor/video-js.min.css">')
+    if "/player_v4.css" not in text:
+        head_parts.append('<link rel="stylesheet" href="/player_v4.css">')
+    if "/vendor/video.min.js" not in text:
+        body_parts.append('<script src="/vendor/video.min.js"></script>')
+    if "/player_v4.js" not in text:
+        body_parts.append('<script src="/player_v4.js"></script>')
+    # Recommendations load after Player V4 so they bind to the real Video.js
+    # element, never the detached legacy <video> owned by smart_ui.js.
+    if "/recommendation_ui.js" not in text:
+        body_parts.append('<script src="/recommendation_ui.js"></script>')
+    if head_parts and "</head>" in text:
+        text = text.replace("</head>", "\n".join(head_parts) + "\n</head>", 1)
+    if body_parts and "</body>" in text:
+        text = text.replace("</body>", "\n".join(body_parts) + "\n</body>", 1)
     return text.encode("utf-8")
 
 
 def install(server_module) -> None:
-    """Install preview endpoints and Player V4 without changing the stable catalog core."""
+    """Install preview endpoints, isolated recommendations and Player V4."""
+    # smart_mode.install() has already wrapped make_handler, but Catalog itself
+    # is not instantiated until create_http_server() calls make_handler(store).
+    # Installing recommendation here therefore safely attaches the catalog to
+    # the store without changing the V4 media-source ownership.
+    recommendation_support.install(server_module, smart_mode)
+
     original_make_handler = server_module.make_handler
     original_server_close = server_module.ThreadingHTTPServer.server_close
     video_exts = set(server_module.VIDEO_EXTS)
     app_dir = Path(server_module.APP_DIR)
 
-    # The media engine owns a log handle and a child process. Tie both to the
-    # LocalHub HTTP server lifetime so tests, restarts and tray exits release
-    # Windows file handles deterministically instead of relying only on atexit.
     def server_close(self):
         try:
             _stop_engine()
@@ -198,6 +207,7 @@ def install(server_module) -> None:
 
     server_module.STATIC_FILES["/player_v4.js"] = app_dir / "player_v4.js"
     server_module.STATIC_FILES["/player_v4.css"] = app_dir / "player_v4.css"
+    server_module.STATIC_FILES["/recommendation_ui.js"] = app_dir / "recommendation_ui.js"
     server_module.STATIC_FILES["/vendor/video.min.js"] = app_dir / "vendor" / "video.min.js"
     server_module.STATIC_FILES["/vendor/video-js.min.css"] = app_dir / "vendor" / "video-js.min.css"
     server_module.STATIC_FILES["/vendor/VIDEOJS-LICENSE.txt"] = app_dir / "vendor" / "VIDEOJS-LICENSE.txt"
@@ -275,6 +285,7 @@ def install(server_module) -> None:
                             "hoverSlots": HOVER_SLOTS,
                             "player": "v4",
                             "mediaEngine": bool(engine_base),
+                            "recommendations": True,
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
