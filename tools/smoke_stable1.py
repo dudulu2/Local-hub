@@ -60,9 +60,11 @@ def main() -> int:
         raise RuntimeError("Player V4 source unexpectedly changed")
 
     thumb_source = inspect.getsource(recommendation_support._isolated_thumb)
-    for forbidden in ("get_thumbnail(", "_ffmpeg", "subprocess"):
+    for forbidden in ("get_thumbnail(", "_shell_thumbnail", "_ffmpeg", "subprocess"):
         if forbidden in thumb_source:
             raise RuntimeError(f"recommendation cover path may compete with playback: {forbidden}")
+    if "_cache_get" not in thumb_source:
+        raise RuntimeError("stable recommendation covers must reuse existing thumbnail cache")
 
     items = [
         item(0, folder="people/alice", tags=["alice", "walk"], name="alice walk 001.mp4", rating=5),
