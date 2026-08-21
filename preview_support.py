@@ -14,6 +14,7 @@ import media_probe
 import recommendation_support
 import smart_mode
 import smart_thumbnail
+import stable2_support
 
 HOVER_SLOTS = 6
 
@@ -173,10 +174,10 @@ def _inject_player_v4(html: bytes) -> bytes:
         body_parts.append('<script src="/vendor/video.min.js"></script>')
     if "/player_v4.js" not in text:
         body_parts.append('<script src="/player_v4.js"></script>')
-    # Recommendations load after Player V4 so they bind to the real Video.js
-    # element, never the detached legacy <video> owned by smart_ui.js.
     if "/recommendation_ui.js" not in text:
         body_parts.append('<script src="/recommendation_ui.js"></script>')
+    if "/stable2_ux.js" not in text:
+        body_parts.append('<script src="/stable2_ux.js"></script>')
     if head_parts and "</head>" in text:
         text = text.replace("</head>", "\n".join(head_parts) + "\n</head>", 1)
     if body_parts and "</body>" in text:
@@ -185,11 +186,8 @@ def _inject_player_v4(html: bytes) -> bytes:
 
 
 def install(server_module) -> None:
-    """Install preview endpoints, isolated recommendations and Player V4."""
-    # smart_mode.install() has already wrapped make_handler, but Catalog itself
-    # is not instantiated until create_http_server() calls make_handler(store).
-    # Installing recommendation here therefore safely attaches the catalog to
-    # the store without changing the V4 media-source ownership.
+    """Install preview endpoints, persistent cached recommendations and Player V4."""
+    stable2_support.install_home_rotation(smart_mode)
     recommendation_support.install(server_module, smart_mode)
 
     original_make_handler = server_module.make_handler
@@ -199,6 +197,7 @@ def install(server_module) -> None:
 
     def server_close(self):
         try:
+            stable2_support.deactivate_preview_cache()
             _stop_engine()
         finally:
             return original_server_close(self)
@@ -208,12 +207,14 @@ def install(server_module) -> None:
     server_module.STATIC_FILES["/player_v4.js"] = app_dir / "player_v4.js"
     server_module.STATIC_FILES["/player_v4.css"] = app_dir / "player_v4.css"
     server_module.STATIC_FILES["/recommendation_ui.js"] = app_dir / "recommendation_ui.js"
+    server_module.STATIC_FILES["/stable2_ux.js"] = app_dir / "stable2_ux.js"
     server_module.STATIC_FILES["/vendor/video.min.js"] = app_dir / "vendor" / "video.min.js"
     server_module.STATIC_FILES["/vendor/video-js.min.css"] = app_dir / "vendor" / "video-js.min.css"
     server_module.STATIC_FILES["/vendor/VIDEOJS-LICENSE.txt"] = app_dir / "vendor" / "VIDEOJS-LICENSE.txt"
 
     def make_handler(store):
         BaseHandler = original_make_handler(store)
+        preview_cache = stable2_support.activate_preview_cache(store, smart_thumbnail, video_exts)
         engine_error = ""
         try:
             engine_base = _start_engine(store.root, app_dir)
@@ -222,6 +223,21 @@ def install(server_module) -> None:
             engine_error = str(exc)
 
         class PreviewHandler(BaseHandler):
+            def _send_preview_bytes(self, data: bytes | None, marker: str) -> None:
+                if not data:
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-LocalHub-Preview", marker)
+                    self.end_headers()
+                    return
+                self._headers(
+                    HTTPStatus.OK,
+                    "image/jpeg",
+                    len(data),
+                    {"Cache-Control": "no-store", "X-LocalHub-Preview": marker},
+                )
+                self.wfile.write(data)
+
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
                 query = urllib.parse.parse_qs(parsed.query)
@@ -245,6 +261,25 @@ def install(server_module) -> None:
                     if engine_base:
                         return self._send_json({"ok": True, "baseUrl": engine_base, "player": "v4"})
                     return self._send_json({"ok": False, "error": engine_error or "媒体引擎不可用"}, 503)
+
+                if parsed.path == "/api/recommend/thumb":
+                    relative = query.get("path", [""])[0]
+                    data = preview_cache.read_cover(relative)
+                    if not data:
+                        preview_cache.queue_paths([relative], include_hover=True)
+                    return self._send_preview_bytes(data, "stable2-cover-cache")
+
+                if parsed.path == "/api/recommend/hover":
+                    relative = query.get("path", [""])[0]
+                    try:
+                        slot = int(query.get("slot", ["0"])[0] or 0)
+                    except ValueError:
+                        slot = 0
+                    slot = max(0, min(HOVER_SLOTS - 1, slot))
+                    data = preview_cache.read_hover(relative, slot)
+                    if not data:
+                        preview_cache.queue_paths([relative], include_hover=True)
+                    return self._send_preview_bytes(data, f"stable2-hover-{slot}")
 
                 if parsed.path == "/api/smart/hover":
                     relative = query.get("path", [""])[0]
@@ -286,6 +321,7 @@ def install(server_module) -> None:
                             "player": "v4",
                             "mediaEngine": bool(engine_base),
                             "recommendations": True,
+                            "persistentPreviewCache": True,
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
@@ -295,6 +331,28 @@ def install(server_module) -> None:
                     return
 
                 return super().do_GET()
+
+            def do_POST(self):
+                parsed = urllib.parse.urlsplit(self.path)
+                if parsed.path == "/api/stable2/playback":
+                    try:
+                        payload = self._read_json()
+                    except Exception:
+                        payload = {}
+                    preview_cache.set_playback_active(bool(payload.get("active")))
+                    return self._send_json({"ok": True})
+
+                if parsed.path == "/api/stable2/warm":
+                    try:
+                        payload = self._read_json()
+                    except Exception:
+                        payload = {}
+                    raw_paths = payload.get("paths", [])
+                    paths = [str(x) for x in raw_paths if str(x)] if isinstance(raw_paths, list) else []
+                    preview_cache.queue_paths(paths, include_hover=bool(payload.get("includeHover", True)))
+                    return self._send_json({"ok": True, "queued": min(len(paths), 48)})
+
+                return super().do_POST()
 
         return PreviewHandler
 
