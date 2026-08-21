@@ -21,6 +21,7 @@ a = Analysis(
         ('move_branding.js', '.'),
         ('player_v4.js', '.'),
         ('player_v4.css', '.'),
+        ('recommendation_ui.js', '.'),
         ('vendor/video.min.js', 'vendor'),
         ('vendor/video-js.min.css', 'vendor'),
         ('vendor/VIDEOJS-LICENSE.txt', 'vendor'),
