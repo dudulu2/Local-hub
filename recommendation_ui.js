@@ -22,10 +22,11 @@
     .lh-recommend-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px 12px;overflow:visible}
     .lh-rec-card{min-width:0;border:0;background:transparent;color:inherit;text-align:left;padding:0;cursor:pointer;display:block}
     .lh-rec-thumb{width:100%;aspect-ratio:16/9;border:1px solid #29292e;border-radius:8px;overflow:hidden;background:linear-gradient(135deg,#19191c,#101012);position:relative;display:block}
-    .lh-rec-thumb img{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:cover;opacity:0;transition:opacity .16s ease}
+    .lh-rec-thumb img{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:cover;opacity:0;transition:opacity .12s ease}
     .lh-rec-thumb img.loaded{opacity:1}
     .lh-rec-thumb::after{content:'▶';position:absolute;inset:0;display:grid;place-items:center;color:#b8b8be;font-size:18px;background:linear-gradient(transparent 58%,rgba(0,0,0,.38));pointer-events:none;transition:opacity .12s}
     .lh-rec-thumb:has(img.loaded)::after{opacity:.15}
+    .lh-rec-card.hover-previewing .lh-rec-thumb::after{opacity:0}
     .lh-rec-card:hover .lh-rec-thumb{border-color:#56565e}.lh-rec-card:hover .lh-rec-title{color:#fff}
     .lh-rec-title{display:block;margin-top:7px;color:#d2d2d6;font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .lh-rec-meta{display:block;margin-top:3px;color:#686870;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -37,13 +38,16 @@
   const panel = document.createElement('section');
   panel.id = 'lhRecommendations';
   panel.className = 'lh-recommend-page hidden';
-  panel.innerHTML = '<div class="lh-recommend-head"><strong>猜你想看</strong><span>本地推荐 · 不联网</span></div><div class="lh-recommend-grid"></div>';
+  panel.innerHTML = '<div class="lh-recommend-head"><strong>猜你想看</strong><span>本地推荐 · 缓存预览</span></div><div class="lh-recommend-grid"></div>';
   info.insertAdjacentElement('afterend', panel);
   const grid = panel.querySelector('.lh-recommend-grid');
 
   let token = 0;
   let controller = null;
   let thumbController = null;
+  let previewController = null;
+  let previewTimer = 0;
+  let previewLoopToken = 0;
   let timer = 0;
   let currentItems = [];
   const objectUrls = new Set();
@@ -52,7 +56,21 @@
     if (viewer.open) document.documentElement.classList.add('lh-viewer-modal-lock');
   }
 
+  function stopPreview(restore = true) {
+    previewLoopToken++;
+    clearTimeout(previewTimer);
+    previewTimer = 0;
+    if (previewController) { previewController.abort(); previewController = null; }
+    const active = grid.querySelector('.lh-rec-card.hover-previewing');
+    if (active) {
+      active.classList.remove('hover-previewing');
+      const img = active.querySelector('img');
+      if (restore && img?.dataset.baseSrc) img.src = img.dataset.baseSrc;
+    }
+  }
+
   function releaseThumbs() {
+    stopPreview(false);
     if (thumbController) { thumbController.abort(); thumbController = null; }
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.clear();
@@ -95,6 +113,16 @@
     write('localhub:recExposure', exposure);
   }
 
+  function queueWarm(items) {
+    const paths = items.map(item => item.id).filter(Boolean).slice(0, 16);
+    if (!paths.length) return;
+    fetch('/api/stable2/warm', {
+      method:'POST', cache:'no-store',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({paths, includeHover:true}),
+    }).catch(() => {});
+  }
+
   async function loadThumb(img, item, signal) {
     try {
       const response = await fetch(item.thumb || `/api/recommend/thumb?path=${encodeURIComponent(item.id || '')}`, {cache:'no-store', signal});
@@ -104,6 +132,7 @@
       const url = URL.createObjectURL(blob);
       objectUrls.add(url);
       img.onload = () => img.classList.add('loaded');
+      img.dataset.baseSrc = url;
       img.src = url;
     } catch (e) {
       if (e?.name !== 'AbortError') console.debug('[LocalHub recommendation thumb]', e);
@@ -121,7 +150,41 @@
         await loadThumb(job.img, job.item, signal);
       }
     };
-    await Promise.all([worker(), worker()]);
+    await Promise.all([worker(), worker(), worker(), worker()]);
+  }
+
+  async function cachedFrame(item, slot, signal) {
+    const response = await fetch(`/api/recommend/hover?path=${encodeURIComponent(item.id || '')}&slot=${slot}`, {cache:'no-store', signal});
+    if (!response.ok || response.status === 204) return null;
+    const blob = await response.blob();
+    if (!blob.size || signal.aborted) return null;
+    const url = URL.createObjectURL(blob);
+    objectUrls.add(url);
+    return url;
+  }
+
+  function schedulePreview(card, item) {
+    stopPreview(true);
+    const myLoop = ++previewLoopToken;
+    previewTimer = window.setTimeout(async () => {
+      if (myLoop !== previewLoopToken || !card.matches(':hover')) return;
+      previewController = new AbortController();
+      const signal = previewController.signal;
+      let frames = [];
+      try {
+        frames = (await Promise.all([...Array(6)].map((_, slot) => cachedFrame(item, slot, signal)))).filter(Boolean);
+      } catch {}
+      if (signal.aborted || myLoop !== previewLoopToken || !card.matches(':hover') || frames.length < 2) return;
+      const img = card.querySelector('img');
+      if (!img) return;
+      card.classList.add('hover-previewing');
+      let i = 0;
+      while (myLoop === previewLoopToken && card.matches(':hover')) {
+        img.src = frames[i++ % frames.length];
+        img.classList.add('loaded');
+        await new Promise(resolve => previewTimer = window.setTimeout(resolve, 620));
+      }
+    }, 480);
   }
 
   function render(items) {
@@ -129,7 +192,7 @@
     currentItems = items;
     if (!items.length) { hide(); return; }
     grid.innerHTML = items.map((item, index) => `
-      <button class="lh-rec-card" type="button" data-rec-index="${index}" title="${esc(item.name)}">
+      <button class="lh-rec-card" type="button" data-rec-index="${index}" data-rec-id="${esc(item.id)}" title="${esc(item.name)}">
         <span class="lh-rec-thumb"><img alt="" decoding="async"></span>
         <span class="lh-rec-title">${esc(item.name)}</span>
         <span class="lh-rec-meta">${esc(item.folder || '根目录')} · ${esc(String(item.ext || '').toUpperCase())}</span>
@@ -138,6 +201,7 @@
     viewer.classList.add('lh-rec-page');
     lockBackground();
     noteExposure(items);
+    queueWarm(items);
     loadThumbQueue(items).catch(() => {});
   }
 
@@ -178,6 +242,18 @@
     viewer.scrollTop = 0;
     timer = setTimeout(() => loadFor(path), 90);
   }
+
+  grid.addEventListener('pointerover', e => {
+    const card = e.target.closest('.lh-rec-card');
+    if (!card || card.contains(e.relatedTarget)) return;
+    const item = currentItems[Number(card.dataset.recIndex) || 0];
+    if (item) schedulePreview(card, item);
+  });
+  grid.addEventListener('pointerout', e => {
+    const card = e.target.closest('.lh-rec-card');
+    if (!card || card.contains(e.relatedTarget)) return;
+    stopPreview(true);
+  });
 
   grid.addEventListener('click', e => {
     const card = e.target.closest('.lh-rec-card');
