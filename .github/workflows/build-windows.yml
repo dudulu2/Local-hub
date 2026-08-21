@@ -31,7 +31,7 @@ on:
       - 'tools/**'
       - '.github/workflows/build-windows.yml'
   pull_request:
-    branches: [main]
+    branches: [ci/player-v4-stable1-base]
     paths:
       - 'launcher.py'
       - 'server.py'
