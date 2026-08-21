@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import inspect
+import sys
 import threading
 import time
 from pathlib import Path
 
-import recommendation_support
-
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import recommendation_support
 
 
 class FakeCatalog:
