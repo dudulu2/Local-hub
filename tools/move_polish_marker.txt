@@ -1,1 +1,0 @@
-Stable3 move-mode visual polish: quiet by default; only active target speaks.
