@@ -36,17 +36,37 @@ def main() -> int:
     preview = (ROOT / "preview_support.py").read_text("utf-8")
     player = (ROOT / "player_v4.js").read_text("utf-8")
 
-    for marker in ("ArrowLeft", "ArrowRight", "ROOT_RESET_MS = 8000", "DRILL_DWELL_MS = 1000", "/api/stable2/playback"):
+    for marker in ("ArrowLeft", "ArrowRight", "/api/stable2/playback"):
         if marker not in ux:
             raise RuntimeError(f"Stable2 UX marker missing: {marker}")
+    for marker in (
+        "EXPANDED_KEY = 'localhub:tree-expanded-v1'",
+        "DRAG_DWELL_MS = 800",
+        "TEMP_COLLAPSE_MS = 8000",
+        "lh-tree-expander",
+        "lh-tree-open",
+        "tempExpanded",
+        "sourceButtons.get(row.path)?.click()",
+        "sessionStorage.setItem(EXPANDED_KEY",
+    ):
+        if marker not in ux:
+            raise RuntimeError(f"Stable3 tree marker missing: {marker}")
+    for forbidden in ("ROOT_RESET_MS", "setLevel(path)", "lh-folder-tree-back"):
+        if forbidden in ux:
+            raise RuntimeError(f"obsolete level-switch navigation survived Stable3: {forbidden}")
+    if "expander.addEventListener('click'" not in ux or "open.addEventListener('click'" not in ux:
+        raise RuntimeError("tree expand and folder-open actions must be separate controls")
+    if "tempExpanded.clear()" not in ux or "manualExpanded.clear()" in ux:
+        raise RuntimeError("8-second cleanup must collapse only temporary drag expansion")
+
     for marker in ("/api/recommend/hover", "includeHover:true", "hover-previewing"):
         if marker not in rec:
             raise RuntimeError(f"recommendation cached-preview marker missing: {marker}")
     for marker in ("stable2_support.install_home_rotation", "/api/recommend/hover", "/api/stable2/warm", "persistentPreviewCache"):
         if marker not in preview:
             raise RuntimeError(f"Stable2 backend marker missing: {marker}")
-    if "stable2" in player.casefold():
-        raise RuntimeError("Player V4 core must stay frozen for Stable2 UX changes")
+    if "stable2" in player.casefold() or "stable3" in player.casefold():
+        raise RuntimeError("Player V4 core must stay frozen for Stable2/Stable3 UX changes")
 
     roots = [row("root", i, "") for i in range(30)]
     others = [row("other", i, f"folder{i % 7}") for i in range(100)]
@@ -89,7 +109,7 @@ def main() -> int:
         finally:
             manager.close()
 
-    print("Stable2 UX/cache/home smoke test passed")
+    print("Stable3 tree UX + Stable2 cache/home smoke test passed")
     return 0
 
 
