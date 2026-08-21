@@ -1,0 +1,1 @@
+trigger stable3 isolated windows validation
