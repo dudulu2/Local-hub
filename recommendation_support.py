@@ -15,7 +15,6 @@ import smart_thumbnail
 
 RECOMMEND_LIMIT = 8
 _TOKEN_RE = re.compile(r"[\w\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+", re.UNICODE)
-_REC_THUMB_GATE = threading.BoundedSemaphore(1)
 
 
 def _norm(value: str) -> str:
@@ -101,41 +100,17 @@ def _public(item: dict) -> dict:
 
 
 def _isolated_thumb(path: Path, size: int = 360) -> bytes | None:
-    """Return a cover without ever starting FFmpeg.
+    """Reuse an already-cached cover and perform no new media work.
 
-    Player V4 owns playback I/O. Recommendations are auxiliary and must not
-    compete with direct Range reads or live transcode streams. Reuse an existing
-    in-memory thumbnail when available, otherwise ask Windows Explorer's shared
-    thumbnail cache. If neither has a cover, return 204 and leave the card blank.
+    Stable1 deliberately refuses Shell thumbnail generation and FFmpeg here.
+    Recommendation is auxiliary: if the library has not already cached a cover,
+    the UI keeps its placeholder instead of competing with Player V4 for I/O.
     """
     try:
         key = smart_thumbnail._identity(path, size)
-        cached = smart_thumbnail._cache_get(key)
+        return smart_thumbnail._cache_get(key)
     except Exception:
         return None
-    if cached:
-        return cached
-    if not _REC_THUMB_GATE.acquire(blocking=False):
-        return None
-    try:
-        try:
-            cached = smart_thumbnail._cache_get(key)
-            if cached:
-                return cached
-        except Exception:
-            pass
-        try:
-            data = smart_thumbnail._shell_thumbnail(path, size)
-        except Exception:
-            data = None
-        if data:
-            try:
-                smart_thumbnail._cache_put(key, data)
-            except Exception:
-                pass
-        return data
-    finally:
-        _REC_THUMB_GATE.release()
 
 
 class RecommendationEngine:
