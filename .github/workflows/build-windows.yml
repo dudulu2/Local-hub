@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main, agent/2.2.3-player-v4-stash-architecture, release/player-v4-stable1]
+    branches: [main, agent/2.2.3-player-v4-stash-architecture, release/player-v4-stable1, release/player-v4-stable2-ux]
     tags: ['v*']
     paths:
       - 'launcher.py'
@@ -17,6 +17,8 @@ on:
       - 'catalog_cache.py'
       - 'recommendation_support.py'
       - 'recommendation_ui.js'
+      - 'stable2_support.py'
+      - 'stable2_ux.js'
       - 'smart_index.html'
       - 'smart_ui.css'
       - 'smart_ui.js'
@@ -44,6 +46,8 @@ on:
       - 'catalog_cache.py'
       - 'recommendation_support.py'
       - 'recommendation_ui.js'
+      - 'stable2_support.py'
+      - 'stable2_ux.js'
       - 'smart_index.html'
       - 'smart_ui.css'
       - 'smart_ui.js'
@@ -103,7 +107,7 @@ jobs:
           Pop-Location
 
       - name: Validate Python
-        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py media_probe.py compat_support.py rating_support.py catalog_cache.py recommendation_support.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py tools/smoke_player_v4.py tools/smoke_stable1.py
+        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py media_probe.py compat_support.py rating_support.py catalog_cache.py recommendation_support.py stable2_support.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py tools/smoke_player_v4.py tools/smoke_stable1.py tools/smoke_stable2.py
 
       - name: Validate frontend JavaScript
         shell: pwsh
@@ -113,9 +117,13 @@ jobs:
           node --check .\move_branding.js
           node --check .\player_v4.js
           node --check .\recommendation_ui.js
+          node --check .\stable2_ux.js
 
       - name: Stable1 feature isolation smoke test
         run: python tools/smoke_stable1.py
+
+      - name: Stable2 UX/cache/home smoke test
+        run: python tools/smoke_stable2.py
 
       - name: Player V4 media engine smoke test
         run: python tools/smoke_player_v4.py
@@ -162,7 +170,7 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: LocalHub-Player-V4-Stable1-Windows-x64
+          name: LocalHub-Player-V4-Stable2-Windows-x64
           path: |
             dist/LocalHub.exe
             dist/SHA256.txt
