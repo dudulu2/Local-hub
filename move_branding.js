@@ -87,21 +87,25 @@
     style.textContent = `
       #moveModeBtn,#rescanBtn,#viewerMoveBtn{display:none!important}
       .card[data-id] img{-webkit-user-drag:none!important;user-drag:none!important}
-      .move-guide{position:fixed;z-index:60;right:22px;top:76px;display:none;align-items:center;gap:9px;padding:8px 11px;border:1px solid #34343a;border-radius:9px;background:rgba(18,18,20,.96);backdrop-filter:blur(10px);box-shadow:0 10px 30px rgba(0,0,0,.28);font-size:11px;color:#a2a2a9;pointer-events:none}
-      .move-guide strong{color:#d7d7dc;font-size:11px}
+      .move-guide{position:fixed;z-index:60;right:18px;top:74px;display:none;align-items:center;gap:6px;max-width:min(460px,calc(100vw - 36px));padding:6px 9px;border:1px solid #303036;border-radius:999px;background:rgba(17,17,19,.94);backdrop-filter:blur(10px);box-shadow:0 8px 24px rgba(0,0,0,.24);font-size:10px;color:#8f8f97;pointer-events:none}
+      .move-guide strong{color:#d6d6db;font-size:10px;font-weight:760;white-space:nowrap}
+      .move-guide span{display:block;min-width:0;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       body.move-mode .move-guide{display:flex}
       body.move-mode .card[data-id]{user-select:none;cursor:grabbing!important}
-      body.move-mode .folder-nav button,body.move-mode .main-nav button[data-route="root"]{position:relative;border:1px dashed transparent}
-      body.move-mode .folder-nav button::after,body.move-mode .main-nav button[data-route="root"]::after{content:'松开移动';margin-left:auto;font-size:9px;color:#777780}
+      body.move-mode .folder-nav button,body.move-mode .main-nav button[data-route="root"]{position:relative}
+      body.move-mode .folder-nav button::after,body.move-mode .main-nav button[data-route="root"]::after{content:none!important;display:none!important}
       body.move-mode .move-drop-hover{border-color:#6c4b20!important;background:#21190f!important;color:#f2d19e!important}
-      body.move-mode .move-drop-hover::after{color:#e8b86d!important}
+      body.move-mode #folderNav .lh-tree-row:has(.move-drop-hover) .lh-tree-count{opacity:0}
+      body.move-mode #folderNav .lh-tree-row:has(.move-drop-hover) .lh-tree-open{position:relative!important;padding-right:66px!important}
+      body.move-mode #folderNav .lh-tree-row:has(.move-drop-hover) .lh-tree-open::after{content:'移动到这里'!important;display:block!important;position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:9px;font-weight:700;color:#e9b86e;white-space:nowrap;pointer-events:none}
+      body.move-mode .folder-nav>button.move-drop-hover::after,body.move-mode .main-nav button[data-route="root"].move-drop-hover::after{content:'移动到这里'!important;display:block!important;margin-left:auto;font-size:9px;font-weight:700;color:#e9b86e;white-space:nowrap}
       body.move-busy .card[data-id]{pointer-events:none;opacity:.72}
-      .card.longpress-source .thumb{outline:2px solid #a06b23!important;outline-offset:2px;transform:translateY(-2px)}
+      .card.longpress-source .thumb{outline:2px solid #8a632e!important;outline-offset:2px;transform:translateY(-1px);opacity:.86}
       .folder-back-btn{display:inline-flex;align-items:center;gap:5px;margin:0 0 8px;padding:5px 9px;border:1px solid #303036;border-radius:7px;background:#151517;color:#a9a9b0;font-size:11px;cursor:pointer}
       .folder-back-btn:hover{border-color:#4c4c54;color:#fff;background:#1b1b1e}
       .folder-back-btn.hidden{display:none!important}
       .card.move-success-pending{opacity:.28!important;pointer-events:none!important;transition:opacity .12s ease}
-      @media(max-width:900px){.move-guide{left:12px;right:12px;top:auto;bottom:18px;justify-content:center}}
+      @media(max-width:900px){.move-guide{left:12px;right:12px;top:auto;bottom:18px;justify-content:center}.move-guide span{max-width:calc(100vw - 100px)}}
     `;
     document.head.appendChild(style);
   }
@@ -110,13 +114,13 @@
     if ($('.move-guide')) return;
     const guide = document.createElement('div');
     guide.className = 'move-guide';
-    guide.innerHTML = '<strong>移动位置</strong><span>长按后拖到左侧文件夹，松开即结束</span>';
+    guide.innerHTML = '<strong>移动</strong><span>选择目标文件夹</span>';
     document.body.appendChild(guide);
   }
 
   function setGuide(text = '') {
     const el = $('.move-guide span');
-    if (el) el.textContent = text || '长按后拖到左侧文件夹，松开即结束';
+    if (el) el.textContent = text || '选择目标文件夹';
   }
 
   function ensureFolderBackButton() {
@@ -338,7 +342,7 @@
     card.classList.add('longpress-source');
     document.body.classList.add('move-mode','is-dragging');
     suppressClickUntil = Date.now() + 650;
-    setGuide(`正在移动 ${fileName(path)}：拖到左侧目标目录后松开`);
+    setGuide(`文件 · ${fileName(path)}`);
     try { navigator.vibrate?.(28); } catch {}
   }
 
