@@ -2,38 +2,8 @@ name: Build Windows EXE
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, agent/2.2.3-player-v4-stash-architecture, release/player-v4-stable1, release/player-v4-stable2-ux, release/player-v4-stable3-tree-ux]
-    tags: ['v*']
-    paths:
-      - 'launcher.py'
-      - 'server.py'
-      - 'smart_mode.py'
-      - 'smart_thumbnail.py'
-      - 'preview_support.py'
-      - 'media_probe.py'
-      - 'compat_support.py'
-      - 'rating_support.py'
-      - 'catalog_cache.py'
-      - 'recommendation_support.py'
-      - 'recommendation_ui.js'
-      - 'stable2_support.py'
-      - 'stable2_ux.js'
-      - 'smart_index.html'
-      - 'smart_ui.css'
-      - 'smart_ui.js'
-      - 'ux_enhancements.css'
-      - 'ux_enhancements.js'
-      - 'move_branding.js'
-      - 'player_v4.js'
-      - 'player_v4.css'
-      - 'media_engine/**'
-      - 'LocalHub.spec'
-      - 'version_info.txt'
-      - 'tools/**'
-      - '.github/workflows/build-windows.yml'
   pull_request:
-    branches: [main, release/player-v4-stable1, release/player-v4-stable2-ux]
+    branches: [ci/player-v4-stable3-move-base]
     paths:
       - 'launcher.py'
       - 'server.py'
@@ -170,16 +140,9 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: LocalHub-Player-V4-Stable3-Tree-Windows-x64
+          name: LocalHub-Player-V4-Stable3-MovePolish-Windows-x64
           path: |
             dist/LocalHub.exe
             dist/SHA256.txt
           if-no-files-found: error
           compression-level: 0
-
-      - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub ${{ github.ref_name }}" --generate-notes
