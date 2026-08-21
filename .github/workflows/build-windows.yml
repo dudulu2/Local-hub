@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main, agent/2.2.3-player-v4-stash-architecture, release/player-v4-stable1, release/player-v4-stable2-ux]
+    branches: [main, agent/2.2.3-player-v4-stash-architecture, release/player-v4-stable1, release/player-v4-stable2-ux, release/player-v4-stable3-tree-ux]
     tags: ['v*']
     paths:
       - 'launcher.py'
@@ -33,7 +33,7 @@ on:
       - 'tools/**'
       - '.github/workflows/build-windows.yml'
   pull_request:
-    branches: [main, release/player-v4-stable1]
+    branches: [main, release/player-v4-stable1, release/player-v4-stable2-ux]
     paths:
       - 'launcher.py'
       - 'server.py'
@@ -122,7 +122,7 @@ jobs:
       - name: Stable1 feature isolation smoke test
         run: python tools/smoke_stable1.py
 
-      - name: Stable2 UX/cache/home smoke test
+      - name: Stable3 tree UX plus Stable2 cache/home smoke test
         run: python tools/smoke_stable2.py
 
       - name: Player V4 media engine smoke test
@@ -170,7 +170,7 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: LocalHub-Player-V4-Stable2-Windows-x64
+          name: LocalHub-Player-V4-Stable3-Tree-Windows-x64
           path: |
             dist/LocalHub.exe
             dist/SHA256.txt
