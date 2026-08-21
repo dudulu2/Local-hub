@@ -22,6 +22,7 @@ a = Analysis(
         ('player_v4.js', '.'),
         ('player_v4.css', '.'),
         ('recommendation_ui.js', '.'),
+        ('stable2_ux.js', '.'),
         ('vendor/video.min.js', 'vendor'),
         ('vendor/video-js.min.css', 'vendor'),
         ('vendor/VIDEOJS-LICENSE.txt', 'vendor'),
