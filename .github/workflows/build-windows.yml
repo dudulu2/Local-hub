@@ -97,7 +97,7 @@ jobs:
         run: python -m pip install --upgrade pyinstaller pystray pillow imageio-ffmpeg comtypes numpy onnxruntime sentencepiece
 
       - name: Validate Python
-        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py interactive_preview_support.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py io_scheduler.py io_support.py visual_encoder.py visual_index.py auto_tag_prompts.py auto_tag_support.py siglip_encoder.py siglip_support.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py tools/smoke_recommend.py tools/smoke_frontend_guard.py tools/smoke_browser.py tools/smoke_auto_tag.py tools/smoke_siglip_online.py tools/smoke_playback_stability.py
+        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py interactive_preview_support.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py io_scheduler.py io_support.py visual_encoder.py visual_index.py auto_tag_prompts.py auto_tag_profile.py auto_tag_support.py auto_tag_v2.py siglip_encoder.py siglip_support.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py tools/smoke_recommend.py tools/smoke_frontend_guard.py tools/smoke_browser.py tools/smoke_auto_tag.py tools/smoke_siglip_online.py tools/smoke_playback_stability.py
 
       - name: Validate frontend JavaScript
         shell: pwsh
