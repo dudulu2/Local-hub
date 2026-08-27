@@ -8,7 +8,7 @@ import urllib.parse
 from http import HTTPStatus
 from pathlib import Path
 
-from auto_tag_prompts import DEFAULT_TAG_PROMPTS
+from auto_tag_prompts import DEFAULT_TAG_PROMPTS, prompts_from_tags
 from io_scheduler import SCHEDULER
 from siglip_encoder import ENCODER_NAME, SiglipModelBundle, SiglipOnnxEncoder
 from visual_encoder import DEFAULT_ENCODER, cosine, mean_vector
@@ -36,16 +36,22 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         self._siglip_prompt_cache = None
         self._siglip_prompt_lock = threading.RLock()
         self._siglip_warmup_running = False
-        # IMPORTANT: installed model files are not consent to run AI. Startup and
-        # opening a video must stay as light as a LocalHub build without SigLIP.
-        # We do not import ORT, create sessions, or warm prompts here.
+
+    def current_prompts(self):
+        profile = getattr(self, "profile", None)
+        if profile is None:
+            return DEFAULT_TAG_PROMPTS
+        try:
+            snapshot = profile.snapshot()
+            prompts = prompts_from_tags(snapshot.get("tags", []))
+            return prompts or DEFAULT_TAG_PROMPTS
+        except Exception:
+            return DEFAULT_TAG_PROMPTS
 
     def enable_siglip(self) -> bool:
         if self._siglip_enabled and self.encoder.name == ENCODER_NAME:
             return True
-        if not self.siglip_bundle.available():
-            return False
-        if not self.siglip_encoder.ready():
+        if not self.siglip_bundle.available() or not self.siglip_encoder.ready():
             return False
         self._siglip_enabled = True
         self.encoder = self.siglip_encoder
@@ -62,8 +68,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         self.invalidate_prototypes()
 
     def refresh_encoder(self):
-        # Status polling and merely opening the player are read-only operations.
-        # Never turn the model on implicitly from here.
         if not self._siglip_enabled:
             return self.encoder
         if self.encoder.name != ENCODER_NAME:
@@ -76,9 +80,10 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         return self.encoder
 
     def cached_prompt_vectors(self):
+        prompts_map = current_prompts(self)
         result = {}
         missing: list[tuple[str, tuple[str, ...], str]] = []
-        for tag, prompts in DEFAULT_TAG_PROMPTS.items():
+        for tag, prompts in prompts_map.items():
             fingerprint = _prompt_hash(prompts)
             cached = self.index.text_vector(tag, ENCODER_NAME, fingerprint)
             if cached:
@@ -102,15 +107,12 @@ def _install_manager_patch(auto_tag_support_module) -> None:
                 return result
             if SCHEDULER.busy():
                 return result
-
             flat_prompts: list[str] = []
             group_sizes: list[int] = []
             for _, prompts, _ in missing:
                 flat_prompts.extend(prompts)
                 group_sizes.append(len(prompts))
             try:
-                # Small batches make prompt generation yield quickly if playback
-                # starts while AI Tag is active.
                 encoded = self.siglip_encoder.encode_texts(flat_prompts, batch_size=4)
                 if len(encoded) != len(flat_prompts):
                     return result
@@ -131,11 +133,8 @@ def _install_manager_patch(auto_tag_support_module) -> None:
 
     def warmup_worker(self):
         try:
-            if not self._siglip_enabled:
-                return
-            if not SCHEDULER.wait_background_idle(self.stop, grace=4.0):
-                return
-            build_prompt_vectors(self)
+            if self._siglip_enabled and SCHEDULER.wait_background_idle(self.stop, grace=4.0):
+                build_prompt_vectors(self)
         except InterruptedError:
             pass
         except Exception as exc:
@@ -146,17 +145,10 @@ def _install_manager_patch(auto_tag_support_module) -> None:
                 self._siglip_warmup_running = False
 
     def start_prompt_warmup(self):
-        if not self._siglip_enabled or SCHEDULER.busy():
-            return
-        if not self.siglip_encoder.ready():
+        if not self._siglip_enabled or SCHEDULER.busy() or not self.siglip_encoder.ready():
             return
         _, missing = cached_prompt_vectors(self)
         if not missing:
-            if self._siglip_prompt_cache is None:
-                self._siglip_prompt_cache = {
-                    tag: self.index.text_vector(tag, ENCODER_NAME, _prompt_hash(prompts))
-                    for tag, prompts in DEFAULT_TAG_PROMPTS.items()
-                }
             return
         with self._siglip_prompt_lock:
             if self._siglip_warmup_running:
@@ -173,18 +165,15 @@ def _install_manager_patch(auto_tag_support_module) -> None:
         vector = self.index.media_vector(path, ENCODER_NAME)
         if not vector:
             return {"ready": False, "items": [], "reason": "not-indexed"}
-
-        frame_vectors = [row[2] for row in self.index.frame_vectors(path) if row[2]]
-        if not frame_vectors:
-            frame_vectors = [vector]
+        frame_vectors = [row[2] for row in self.index.frame_vectors(path) if row[2]] or [vector]
         existing = {tag.casefold() for tag in self.store.tags_for(path)}
         feedback = {key.casefold(): value for key, value in self.index.feedback_for(path).items()}
         text_vectors = build_prompt_vectors(self)
-        if len(text_vectors) < len(DEFAULT_TAG_PROMPTS) and not SCHEDULER.busy():
+        prompt_target = len(current_prompts(self))
+        if len(text_vectors) < prompt_target and not SCHEDULER.busy():
             start_prompt_warmup(self)
         prototypes = self._prototypes()
         items = []
-
         for tag, text_vector in text_vectors.items():
             key = tag.casefold()
             if key in existing or feedback.get(key) == -1:
@@ -198,103 +187,60 @@ def _install_manager_patch(auto_tag_support_module) -> None:
             prototype_row = prototypes.get(key)
             prototype_score = cosine(vector, prototype_row["prototype"]) if prototype_row else None
             combined = semantic if prototype_score is None else semantic * 0.72 + prototype_score * 0.28
-            items.append(
-                {
-                    "tag": tag,
-                    "score": round(combined, 4),
-                    "semanticScore": round(semantic, 4),
-                    "prototypeScore": round(prototype_score, 4) if prototype_score is not None else None,
-                    "frameMin": round(ordered[0], 4),
-                    "frameMax": round(peak, 4),
-                    "frames": len(frame_scores),
-                    "source": "siglip-zero-shot+prototype" if prototype_score is not None else "siglip-zero-shot",
-                }
-            )
-
-        semantic_keys = {tag.casefold() for tag in text_vectors}
-        for key, row in prototypes.items():
-            if key in existing or feedback.get(key) == -1 or key in semantic_keys:
-                continue
-            score = cosine(vector, row["prototype"])
-            threshold = float(row["threshold"])
-            if score < threshold:
-                continue
-            items.append(
-                {
-                    "tag": row["tag"],
-                    "score": round(score, 4),
-                    "semanticScore": None,
-                    "prototypeScore": round(score, 4),
-                    "frames": len(frame_vectors),
-                    "positives": int(row["positives"]),
-                    "source": "visual-prototype",
-                }
-            )
-
+            # Explicit positive evidence makes the learned prototype matter more;
+            # explicit negative evidence is filtered above.
+            if feedback.get(key) == 1 and prototype_score is not None:
+                combined = combined * 0.65 + prototype_score * 0.35
+            items.append({
+                "tag": tag,
+                "score": round(combined, 4),
+                "semanticScore": round(semantic, 4),
+                "prototypeScore": round(prototype_score, 4) if prototype_score is not None else None,
+                "frames": len(frame_scores),
+                "source": "siglip-zero-shot+prototype" if prototype_score is not None else "siglip-zero-shot",
+            })
         items.sort(key=lambda row: row["score"], reverse=True)
-        reason = "prompts-warming" if len(text_vectors) < len(DEFAULT_TAG_PROMPTS) else ""
         return {
             "ready": True,
             "items": items[: max(1, min(10, int(limit)))],
-            "reason": reason,
+            "reason": "prompts-warming" if len(text_vectors) < prompt_target else "",
             "calibrated": False,
             "promptVectors": len(text_vectors),
-            "promptTarget": len(DEFAULT_TAG_PROMPTS),
+            "promptTarget": prompt_target,
         }
 
     def status_with_siglip(self, path: str = ""):
-        # Deliberately do not call refresh_encoder(): status is polled simply by
-        # opening a video and must never initialize AI by itself.
         encoder_name = self.encoder.name
         semantic_active = bool(self._siglip_enabled and encoder_name == ENCODER_NAME)
         index_name = ENCODER_NAME if semantic_active else encoder_name
         index_stats = self.index.stats(index_name)
-        io_state = SCHEDULER.snapshot()
         model_status = self.siglip_bundle.status()
         model_status["enabled"] = semantic_active
-        with self.lock:
-            prototype_cache = self._prototype_cache[1] if self._prototype_cache else {}
-            payload = {
-                "ok": True,
-                "encoder": encoder_name,
-                "semanticModel": semantic_active,
-                "aiEnabled": semantic_active,
-                "libraryRunning": self.library_running,
-                "queued": self.urgent.qsize() + len(self.library),
-                "current": self.current,
-                "completed": self.completed,
-                "failed": self.failed,
-                "lastError": self.last_error,
-                "lastElapsedMs": round(self.last_elapsed_ms, 1),
-                "indexed": index_stats["media"],
-                "indexedFrames": index_stats["frames"],
-                "learnedTags": len(prototype_cache),
-                "learnedTagsCached": bool(self._prototype_cache),
-                "minPositives": auto_tag_support_module.MIN_TAG_POSITIVES,
-                "io": io_state,
-            }
+        payload = original_status(self, path)
+        payload.update({
+            "encoder": encoder_name,
+            "semanticModel": semantic_active,
+            "aiEnabled": semantic_active,
+            "indexed": index_stats["media"],
+            "indexedFrames": index_stats["frames"],
+            "model": model_status,
+            "suggestionMode": "siglip-zero-shot" if semantic_active else "visual-prototype",
+        })
         if path:
-            if model_status.get("installed"):
-                payload["pathIndexed"] = semantic_active and self.index.has_media(path, ENCODER_NAME)
-            else:
-                payload["pathIndexed"] = self.index.has_media(path, encoder_name)
-        payload["model"] = model_status
-        payload["suggestionMode"] = "siglip-zero-shot" if semantic_active else "visual-prototype"
+            payload["pathIndexed"] = self.index.has_media(path, ENCODER_NAME) if semantic_active else self.index.has_media(path, encoder_name)
         if semantic_active:
             cached, missing = cached_prompt_vectors(self)
             payload["promptVectors"] = len(cached)
-            payload["promptTarget"] = len(DEFAULT_TAG_PROMPTS)
+            payload["promptTarget"] = len(current_prompts(self))
             payload["promptWarmup"] = self._siglip_warmup_running
             payload["promptMissing"] = len(missing)
         return payload
 
     def queue_with_siglip(self, path: str):
-        # This method is only reached after the user explicitly clicks analyze.
         enable_siglip(self)
         return original_queue_media(self, path)
 
     def start_library_with_siglip(self):
-        # Full-library analysis is also an explicit user action.
         enable_siglip(self)
         return original_start_library(self)
 
@@ -304,6 +250,7 @@ def _install_manager_patch(auto_tag_support_module) -> None:
     Manager._refresh_siglip_encoder = refresh_encoder
     Manager._siglip_prompt_vectors = build_prompt_vectors
     Manager._start_siglip_prompt_warmup = start_prompt_warmup
+    Manager._current_tag_prompts = current_prompts
     Manager.suggestions = semantic_suggestions
     Manager.status = status_with_siglip
     Manager.queue_media = queue_with_siglip
@@ -324,15 +271,7 @@ def install(server_module, auto_tag_support_module) -> None:
 
     try:
         base_html = (app_dir / "smart_index.html").read_text("utf-8")
-        enhanced_html = base_html.replace(
-            "</head>",
-            '  <link rel="stylesheet" href="/auto_tag_ui.css">\n  <link rel="stylesheet" href="/playback_stability.css">\n</head>',
-            1,
-        ).replace(
-            "</body>",
-            '  <script src="/auto_tag_ui.js"></script>\n  <script src="/playback_stability.js"></script>\n</body>',
-            1,
-        ).encode("utf-8")
+        enhanced_html = base_html.replace("</head>",'  <link rel="stylesheet" href="/auto_tag_ui.css">\n  <link rel="stylesheet" href="/playback_stability.css">\n</head>',1).replace("</body>",'  <script src="/auto_tag_ui.js"></script>\n  <script src="/playback_stability.js"></script>\n</body>',1).encode("utf-8")
     except OSError:
         enhanced_html = b""
 
@@ -340,56 +279,36 @@ def install(server_module, auto_tag_support_module) -> None:
 
     def make_handler(store):
         BaseHandler = original_make_handler(store)
-
         class SiglipHandler(BaseHandler):
             def _siglip_json(self, payload, status=HTTPStatus.OK):
                 raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 self._headers(status, "application/json; charset=utf-8", len(raw), {"Cache-Control": "no-store"})
                 self.wfile.write(raw)
-
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
                 if parsed.path in {"/", "/index.html"} and enhanced_html:
                     self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(enhanced_html), {"Cache-Control": "no-cache"})
-                    self.wfile.write(enhanced_html)
-                    return
-                if parsed.path != "/api/auto-tag/model":
-                    return super().do_GET()
+                    self.wfile.write(enhanced_html); return
+                if parsed.path != "/api/auto-tag/model": return super().do_GET()
                 manager = getattr(store, "_auto_tag_manager", None)
-                if manager is None:
-                    return self._siglip_json({"ok": False, "error": "Auto Tag 尚未初始化"}, HTTPStatus.SERVICE_UNAVAILABLE)
-                payload = manager.siglip_bundle.status()
-                payload["enabled"] = bool(getattr(manager, "_siglip_enabled", False))
-                return self._siglip_json({"ok": True, **payload})
-
+                if manager is None: return self._siglip_json({"ok":False,"error":"Auto Tag 尚未初始化"},HTTPStatus.SERVICE_UNAVAILABLE)
+                payload = manager.siglip_bundle.status(); payload["enabled"] = bool(getattr(manager,"_siglip_enabled",False))
+                return self._siglip_json({"ok":True,**payload})
             def do_POST(self):
                 parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path != "/api/auto-tag/model":
-                    return super().do_POST()
+                if parsed.path != "/api/auto-tag/model": return super().do_POST()
                 manager = getattr(store, "_auto_tag_manager", None)
-                if manager is None:
-                    return self._siglip_json({"ok": False, "error": "Auto Tag 尚未初始化"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                if manager is None: return self._siglip_json({"ok":False,"error":"Auto Tag 尚未初始化"},HTTPStatus.SERVICE_UNAVAILABLE)
                 try:
-                    data = self._read_json()
-                    action = str(data.get("action", "install"))
-                    if action == "install":
-                        # Download/verify only. Installing files does not start AI.
-                        manager.siglip_bundle.start_install()
-                    elif action == "enable":
-                        manager._enable_siglip()
-                    elif action == "unload":
-                        manager._disable_siglip()
-                    elif action == "refresh":
-                        # Refresh remains read-only unless AI was already enabled.
-                        manager._refresh_siglip_encoder()
-                    else:
-                        raise ValueError("未知 SigLIP 模型操作")
-                    payload = manager.siglip_bundle.status()
-                    payload["enabled"] = bool(getattr(manager, "_siglip_enabled", False))
-                    return self._siglip_json({"ok": True, **payload})
+                    data=self._read_json(); action=str(data.get("action","install"))
+                    if action=="install": manager.siglip_bundle.start_install()
+                    elif action=="enable": manager._enable_siglip()
+                    elif action=="unload": manager._disable_siglip()
+                    elif action=="refresh": manager._refresh_siglip_encoder()
+                    else: raise ValueError("未知 SigLIP 模型操作")
+                    payload=manager.siglip_bundle.status(); payload["enabled"]=bool(getattr(manager,"_siglip_enabled",False))
+                    return self._siglip_json({"ok":True,**payload})
                 except ValueError as exc:
-                    return self._siglip_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
-
+                    return self._siglip_json({"ok":False,"error":str(exc)},HTTPStatus.BAD_REQUEST)
         return SiglipHandler
-
     server_module.make_handler = make_handler
