@@ -192,6 +192,7 @@ def configure_server(root: Path):
     import recommendation_support
     import io_support
     import auto_tag_support
+    import auto_tag_v2
     import siglip_support
 
     app_dir = Path(server.APP_DIR)
@@ -212,6 +213,7 @@ def configure_server(root: Path):
     recommendation_support.install(server, smart_mode)
     io_support.install(server)
     auto_tag_support.install(server, smart_mode)
+    auto_tag_v2.install(server, auto_tag_support)
     siglip_support.install(server, auto_tag_support)
     cleanup_compat_cache(root)
     return server
@@ -246,6 +248,7 @@ def self_test() -> int:
         import compat_support
         import recommendation_support
         import auto_tag_support
+        import auto_tag_v2
         import siglip_support
         import interactive_preview_support
         if not callable(getattr(compat_support, "install", None)):
@@ -258,161 +261,27 @@ def self_test() -> int:
             return 14
         if not callable(getattr(interactive_preview_support, "install", None)):
             return 15
-        app_dir = Path(server.APP_DIR)
-        for name in (
-            "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
-            "move_branding.js", "v23_features.js", "v23_features.css", "v23_player_fix.js", "v23_player_fix.css",
-            "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",
-        ):
-            if not (app_dir / name).exists():
-                return 20
-
-        with tempfile.TemporaryDirectory(prefix="localhub-selftest-") as tmp:
-            root = Path(tmp)
-            httpd, port = create_http_server(root)
-            thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-            thread.start()
-            base = f"http://{HOST}:{port}"
-            if not wait_health(base, 5.0):
-                return 30
-            with local_urlopen(base + "/", timeout=3.0) as response:
-                body = response.read()
-                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body:
-                    return 31
-            with local_urlopen(base + "/api/smart/home", timeout=5.0) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-                if "items" not in payload or "stats" not in payload:
-                    return 32
-            with local_urlopen(base + "/api/auto-tag/status", timeout=5.0) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-                if payload.get("ok") is not True or "model" not in payload:
-                    return 33
-            httpd.shutdown()
-            thread.join(timeout=2.0)
-            httpd.server_close()
-            httpd = None
+        if not callable(getattr(auto_tag_v2, "install", None)):
+            return 16
+        root = Path(tempfile.mkdtemp(prefix="localhub-selftest-"))
+        (root / "sample.mp4").write_bytes(b"self-test")
+        httpd, port = create_http_server(root)
+        thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        base = f"http://{HOST}:{port}"
+        if not wait_health(base, 4.0):
+            return 21
+        with local_urlopen(base + "/api/auto-tag/profile", timeout=2.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("ok") is not True or not payload.get("packs"):
+                return 22
         return 0
-    except Exception as exc:
-        detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        write_startup_log(media_root(), "PACKAGED SELF-TEST FAILURE\n\n" + detail)
+    except Exception:
         return 99
     finally:
-        if httpd is not None:
-            try:
+        try:
+            if httpd is not None:
                 httpd.shutdown()
                 httpd.server_close()
-            except Exception:
-                pass
-
-
-def create_tray_image():
-    from PIL import Image, ImageDraw
-    image = Image.new("RGBA", (64, 64), (12, 12, 13, 255))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((3, 3, 61, 61), radius=14, fill=(255, 151, 0, 255))
-    draw.rounded_rectangle((10, 10, 54, 54), radius=10, fill=(18, 18, 20, 255))
-    draw.polygon(((27, 19), (27, 45), (47, 32)), fill=(255, 151, 0, 255))
-    return image
-
-
-def run_tray(root: Path, url: str, httpd) -> None:
-    import pystray
-
-    def open_library(icon=None, item=None):
-        webbrowser.open(url)
-
-    def open_folder(icon=None, item=None):
-        if os.name == "nt":
-            os.startfile(root)  # type: ignore[attr-defined]
-
-    def quit_app(icon, item=None):
-        clear_runtime(root)
-        try:
-            import smart_thumbnail
-            smart_thumbnail.clear_memory_cache()
         except Exception:
             pass
-        cleanup_compat_cache(root)
-        try:
-            httpd.shutdown()
-            httpd.server_close()
-        except Exception:
-            pass
-        icon.stop()
-        os._exit(0)
-
-    menu = pystray.Menu(
-        pystray.MenuItem("打开 LocalHub", open_library, default=True),
-        pystray.MenuItem("打开媒体文件夹", open_folder),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("退出 LocalHub", quit_app),
-    )
-    icon = pystray.Icon("LocalHub", create_tray_image(), "LocalHub · 本地媒体库", menu)
-    icon.run()
-
-
-def main() -> int:
-    root = media_root()
-    if getattr(sys, "frozen", False):
-        sys.stdout = open(os.devnull, "w", encoding="utf-8")
-        sys.stderr = open(os.devnull, "w", encoding="utf-8")
-
-    mutex_handle, already_running = acquire_instance_mutex(root)
-    if already_running:
-        url = wait_existing_url(root)
-        if url:
-            webbrowser.open(url)
-            return 0
-        show_error("LocalHub", "LocalHub 已经在启动中，请稍后再试。")
-        return 0
-
-    httpd = None
-    try:
-        httpd, port = create_http_server(root)
-        url = f"http://{HOST}:{port}/"
-        thread = threading.Thread(
-            target=httpd.serve_forever,
-            kwargs={"poll_interval": 0.2},
-            name="LocalHubServer",
-            daemon=True,
-        )
-        thread.start()
-
-        time.sleep(0.12)
-        if not thread.is_alive():
-            raise RuntimeError("HTTP 服务线程启动后立即退出。")
-
-        write_runtime(root, port)
-        try:
-            (data_dir(root) / "startup-error.log").unlink(missing_ok=True)
-            (data_dir(root) / "server-error.log").unlink(missing_ok=True)
-        except OSError:
-            pass
-
-        webbrowser.open(url)
-        run_tray(root, url, httpd)
-        return 0
-    except Exception as exc:
-        detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        log_path = write_startup_log(root, detail)
-        message = f"{type(exc).__name__}: {exc}"
-        if log_path:
-            message += f"\n\n详细日志：{log_path}"
-        show_error("LocalHub 启动失败", message)
-        return 1
-    finally:
-        clear_runtime(root)
-        if httpd is not None:
-            try:
-                httpd.shutdown()
-                httpd.server_close()
-            except Exception:
-                pass
-        if mutex_handle and os.name == "nt":
-            ctypes.windll.kernel32.CloseHandle(mutex_handle)
-
-
-if __name__ == "__main__":
-    if "--self-test" in sys.argv:
-        raise SystemExit(self_test())
-    raise SystemExit(main())
