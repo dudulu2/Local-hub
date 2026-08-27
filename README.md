@@ -6,7 +6,7 @@
 
 **浏览 · 播放 · 图包 · Tag · 评分 · 改名 · 拖动分类 · 继续观看**
 
-[![Version](https://img.shields.io/badge/version-2.2.3-orange)](../../releases/latest)
+[![Version](https://img.shields.io/badge/version-2.4.0-orange)](../../releases/latest)
 ![Windows](https://img.shields.io/badge/Windows-x64-2b2b2b)
 ![Local First](https://img.shields.io/badge/local--first-127.0.0.1-2b2b2b)
 
@@ -312,9 +312,9 @@ GitHub Actions 会执行：
 
 ## 当前版本
 
-**LocalHub 2.2.3**
+**LocalHub 2.4.0**
 
-这是第一个正式公开发行版本，重点已经完成：
+2.4.0 作为当前冻结的稳定版本，继续围绕大媒体库浏览、播放器稳定性和本地整理体验打磨。
 
 - 大媒体库首页 / 分页架构
 - 低 I/O 缩略图和 6 帧预览
@@ -327,7 +327,7 @@ GitHub Actions 会执行：
 - 托盘运行
 - 本地代理隔离启动
 
-后续会继续围绕：索引速度、播放器兼容性、媒体整理效率和本地应用体验迭代。
+后续会继续围绕：文件操作可撤销、索引速度、播放器兼容性、媒体整理效率和本地应用体验迭代。
 
 <div align="center">
 
