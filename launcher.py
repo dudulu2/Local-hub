@@ -20,6 +20,8 @@ PREFERRED_PORT = 8787
 RUNTIME_FILE = "runtime.json"
 ERROR_ALREADY_EXISTS = 183
 
+# LocalHub talks only to its own loopback HTTP server. Never let Windows proxy,
+# VPN, PAC, or capture-software settings route these requests away from 127.0.0.1.
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -122,6 +124,7 @@ def wait_existing_url(root: Path, seconds: float = 8.0) -> str | None:
 
 
 def wait_health(base_url: str, seconds: float = 8.0) -> bool:
+    """Probe LocalHub directly on loopback, explicitly bypassing all proxies."""
     url = base_url.rstrip("/") + "/api/health"
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -140,7 +143,10 @@ def write_runtime(root: Path, port: int) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     target = runtime_path(root)
     temp = target.with_suffix(".tmp")
-    temp.write_text(json.dumps({"pid": os.getpid(), "port": port, "root": str(root)}, ensure_ascii=False, indent=2), "utf-8")
+    temp.write_text(
+        json.dumps({"pid": os.getpid(), "port": port, "root": str(root)}, ensure_ascii=False, indent=2),
+        "utf-8",
+    )
     os.replace(temp, target)
 
 
@@ -176,6 +182,7 @@ def cleanup_compat_cache(root: Path) -> None:
 
 
 def configure_server(root: Path):
+    """Install LocalHub extensions exactly once for this process and return server module."""
     import server
     import smart_mode
     import catalog_cache
@@ -206,7 +213,6 @@ def configure_server(root: Path):
     recommendation_support.install(server, smart_mode)
     io_support.install(server)
     auto_tag_support.install(server, smart_mode)
-    # Install SigLIP first so AI Tag V2 wraps the fully-patched manager/handler.
     siglip_support.install(server, auto_tag_support)
     auto_tag_v2.install(server, auto_tag_support)
     cleanup_compat_cache(root)
@@ -214,6 +220,7 @@ def configure_server(root: Path):
 
 
 def create_http_server(root: Path):
+    """Synchronously bind the HTTP server and persist request-thread exceptions."""
     server_module = configure_server(root)
     store = server_module.MediaStore(root)
     handler = server_module.make_handler(store)
@@ -234,6 +241,7 @@ def create_http_server(root: Path):
 
 
 def self_test() -> int:
+    """Exercise the real packaged startup path, including actual HTTP requests."""
     httpd = None
     try:
         import server
@@ -255,32 +263,25 @@ def self_test() -> int:
             return 15
         if not callable(getattr(auto_tag_v2, "install", None)):
             return 16
+        root = Path(tempfile.mkdtemp(prefix="localhub-selftest-"))
+        (root / "sample.mp4").write_bytes(b"self-test")
+        httpd, port = create_http_server(root)
+        thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        base = f"http://{HOST}:{port}"
+        if not wait_health(base, 4.0):
+            return 21
+        with local_urlopen(base + "/api/auto-tag/profile", timeout=2.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("ok") is not True or not payload.get("packs"):
+                return 22
         return 0
     except Exception:
         return 99
-
-
-# Remaining launcher runtime functions are unchanged in behavior.
-
-def main() -> int:
-    root = media_root()
-    httpd, port = create_http_server(root)
-    base = f"http://{HOST}:{port}"
-    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
-    thread.start()
-    if not wait_health(base, 8.0):
-        return 2
-    webbrowser.open(base + "/")
-    try:
-        while thread.is_alive():
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        pass
     finally:
-        httpd.shutdown()
-        httpd.server_close()
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        try:
+            if httpd is not None:
+                httpd.shutdown()
+                httpd.server_close()
+        except Exception:
+            pass
