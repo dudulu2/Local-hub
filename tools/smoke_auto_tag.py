@@ -35,6 +35,19 @@ def request_json(base: str, path: str, payload: dict | None = None) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def dump_server_log(root: Path) -> None:
+    log = root / ".localhub" / "server-error.log"
+    if not log.exists():
+        print("--- LocalHub server-error.log missing ---")
+        return
+    print("--- LocalHub server-error.log ---")
+    try:
+        print(log.read_text("utf-8", errors="replace"))
+    except Exception as exc:
+        print(f"unable to read server log: {exc}")
+    print("--- end server-error.log ---")
+
+
 def fake_installed_bundle(base: Path) -> Path:
     model_dir = base / "LocalHub" / "models" / MODEL_ID
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +84,6 @@ def main() -> None:
         bundle=SiglipModelBundle(root); status=bundle.status(); assert status["totalBytes"]==TOTAL_DOWNLOAD_BYTES==sum(row.size for row in MODEL_FILES); assert status["installed"] is False
         installed_appdata=Path(tmp)/"installed-appdata"; fake_installed_bundle(installed_appdata); os.environ["LOCALAPPDATA"]=str(installed_appdata)
 
-        # Reset profile to first-use state for API checks.
         (root/".localhub"/"auto-tag-profile.json").unlink(missing_ok=True)
         (root/"sample.mp4").write_bytes(b"not-a-real-video")
         httpd,port=launcher.create_http_server(root); thread=threading.Thread(target=httpd.serve_forever,kwargs={"poll_interval":0.05},daemon=True); thread.start(); base=f"http://127.0.0.1:{port}"
@@ -86,7 +98,12 @@ def main() -> None:
             feedback=request_json(base,"/api/auto-tag/feedback-v2",{"path":"sample.mp4","tag":"Boss","value":-1}); assert feedback["rematchPending"]>=1
             rematch=request_json(base,"/api/auto-tag/rematch",{}); assert rematch["count"]>=1
             new_media=request_json(base,"/api/auto-tag/new-media"); assert "sample.mp4" in new_media["paths"]
-            auto=request_json(base,"/api/auto-tag/status"); assert auto["ok"] is True and auto["model"]["installed"] is True and auto["semanticModel"] is False and auto["aiEnabled"] is False
+            try:
+                auto=request_json(base,"/api/auto-tag/status")
+            except Exception:
+                dump_server_log(root)
+                raise
+            assert auto["ok"] is True and auto["model"]["installed"] is True and auto["semanticModel"] is False and auto["aiEnabled"] is False
             assert len(DEFAULT_TAG_PROMPTS)>=8
         finally:
             httpd.shutdown(); thread.join(timeout=2.0); httpd.server_close()
