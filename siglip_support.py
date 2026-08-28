@@ -27,6 +27,7 @@ def _install_manager_patch(auto_tag_support_module) -> None:
     original_suggestions = Manager.suggestions
     original_queue_media = Manager.queue_media
     original_start_library = Manager.start_library
+    original_status = Manager.status
 
     def init_with_siglip(self, store):
         original_init(self, store)
@@ -187,8 +188,6 @@ def _install_manager_patch(auto_tag_support_module) -> None:
             prototype_row = prototypes.get(key)
             prototype_score = cosine(vector, prototype_row["prototype"]) if prototype_row else None
             combined = semantic if prototype_score is None else semantic * 0.72 + prototype_score * 0.28
-            # Explicit positive evidence makes the learned prototype matter more;
-            # explicit negative evidence is filtered above.
             if feedback.get(key) == 1 and prototype_score is not None:
                 combined = combined * 0.65 + prototype_score * 0.35
             items.append({
