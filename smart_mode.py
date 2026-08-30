@@ -102,6 +102,7 @@ class Catalog:
         self.session_new_ids: list[str] = []
         self.initialized = False
         self.last_change_check = 0.0
+        self._track_next_refresh = False
         self.built_at = 0.0
         self.building = False
         self._start_refresh()
@@ -114,7 +115,10 @@ class Catalog:
             self.ready.clear()
         threading.Thread(target=self._refresh_worker, name="LocalHubCatalog", daemon=True).start()
 
-    def refresh(self, wait: bool = False) -> None:
+    def refresh(self, wait: bool = False, track_new: bool = False) -> None:
+        with self.lock:
+            if track_new:
+                self._track_next_refresh = True
         self._start_refresh()
         if wait:
             self.ready.wait(20)
@@ -144,6 +148,8 @@ class Catalog:
             with self.lock:
                 previous_video_ids = set(self.video_ids)
                 was_initialized = self.initialized
+                track_new = bool(self._track_next_refresh)
+                self._track_next_refresh = False
                 self.items = items
                 self.by_id = by_id
                 self.direct_by_folder = direct
@@ -152,13 +158,13 @@ class Catalog:
                 self.video_ids = current_video_ids
                 self.built_at = time.time()
 
-                if was_initialized:
+                existing = [item_id for item_id in self.session_new_ids if item_id in by_id]
+                if was_initialized and track_new:
                     added = [
                         item["id"]
                         for item in sorted(items, key=lambda row: row.get("modified", 0), reverse=True)
                         if item["type"] == "video" and item["id"] not in previous_video_ids
                     ]
-                    existing = [item_id for item_id in self.session_new_ids if item_id in by_id]
                     merged: list[str] = []
                     seen: set[str] = set()
                     for item_id in added + existing:
@@ -168,11 +174,11 @@ class Catalog:
                         merged.append(item_id)
                     self.session_new_ids = merged
                 else:
-                    # Everything present during the first catalog build is the
-                    # baseline. "New video" only means added while this LocalHub
-                    # session is running, so existing libraries never light up as
-                    # unread on every launch.
-                    self.initialized = True
+                    self.session_new_ids = existing
+                    if not was_initialized:
+                        # Everything present during a first build with no prior
+                        # snapshot is the baseline, not an unread notification.
+                        self.initialized = True
         finally:
             with self.lock:
                 self.building = False
@@ -206,7 +212,7 @@ class Catalog:
         self._await()
         now = time.monotonic()
         with self.lock:
-            if now - self.last_change_check < CHANGE_CHECK_INTERVAL:
+            if self.building or now - self.last_change_check < CHANGE_CHECK_INTERVAL:
                 return False
             self.last_change_check = now
             known = set(self.video_ids)
@@ -216,7 +222,7 @@ class Catalog:
             return False
         if current == known:
             return False
-        self.refresh(wait=True)
+        self.refresh(wait=True, track_new=True)
         return True
 
     def stats(self) -> dict:
@@ -432,7 +438,10 @@ def install(server_module) -> None:
                 if path == "/api/smart/pack":
                     return self._send_json(catalog.pack(query.get("folder", [""])[0]))
                 if path == "/api/smart/rescan":
-                    catalog.refresh(wait=True)
+                    # Manual rescans include LocalHub's own rename/move workflow.
+                    # They refresh the catalog but deliberately do not create new
+                    # video notifications from path changes.
+                    catalog.refresh(wait=True, track_new=False)
                     return self._send_json({"ok": True, "stats": catalog.stats()})
                 if path == "/api/smart/thumb":
                     relative = query.get("path", [""])[0]
