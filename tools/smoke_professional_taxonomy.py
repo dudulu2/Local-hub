@@ -9,6 +9,8 @@ def main() -> None:
     assert all(len(group.get("tags", [])) >= 20 for group in groups), "every built-in group must have at least 20 tags"
     names = [str(group.get("name", "")) for group in groups]
     assert len(names) == len(set(names)), "group names must be unique"
+    for expected in ("全部视频", "生活", "学习", "风景", "娱乐"):
+        assert expected in names, f"missing product-facing group: {expected}"
     print("professional taxonomy smoke test passed")
 
 
