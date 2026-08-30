@@ -24,46 +24,22 @@
   let stalls = [];
   let unstableNotifiedAt = 0;
 
-  // Opening a video is interactive work too. Previously the backend only learned
-  // that playback had priority after Chromium emitted "play". That leaves a
-  // startup window where thumbnail/hover FFmpeg jobs can still compete with
-  // metadata and first-frame reads. Mark that short window as interactive, then
-  // release it as soon as metadata/data/error arrives. No transcoding is started.
-  let startupPriorityTimer = null;
-
-  async function postActivity(payload) {
-    try {
-      await fetch('/api/io/activity', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(payload),
-        cache: 'no-store',
-        keepalive: true,
-      });
-    } catch {}
-  }
-
-  function releaseStartupPriority() {
-    clearTimeout(startupPriorityTimer);
-    startupPriorityTimer = null;
-    postActivity({seeking:false});
-  }
-
-  function boostStartupPriority() {
-    clearTimeout(startupPriorityTimer);
-    // Re-use the scheduler's short interactive/seeking lane rather than the
-    // 30-second "playing" lease. If a file never loads, this cannot starve
-    // background work indefinitely.
-    postActivity({seeking:true});
-    startupPriorityTimer = setTimeout(releaseStartupPriority, 6500);
-  }
-
   function showPassiveNotice(title, text) {
     if (!notice) return;
     if (noticeTitle) noticeTitle.textContent = title;
     if (noticeText) noticeText.textContent = text;
     notice.classList.remove('hidden');
     compatBtn?.classList.add('recommended');
+  }
+
+  function hideInitialAnalysisNotice() {
+    // smart_ui starts safe browser-native files immediately while probing in the
+    // background. The diagnostic probe must never become a visual blocker for a
+    // source that Chromium is already loading. Real playback errors use different
+    // notice titles and are therefore left untouched.
+    if (notice && (noticeTitle?.textContent || '').trim() === '正在分析媒体') {
+      notice.classList.add('hidden');
+    }
   }
 
   function resetWatchdog() {
@@ -84,13 +60,11 @@
   }
 
   // ----- portrait / rotation-safe fitting ---------------------------------
-  // Some phone files expose different coded/intrinsic and display dimensions.
-  // smart_ui already performs the single authoritative FFmpeg probe. To avoid a
-  // second probe chain here, we only consume dimensions that smart_ui renders in
-  // #mediaDiagnostics, plus Chromium's intrinsic dimensions as a fallback.
+  // smart_ui already performs the only authoritative FFmpeg probe. This layer
+  // consumes the dimensions already rendered in #mediaDiagnostics and falls back
+  // to Chromium's intrinsic dimensions. It never starts another probe process.
   let diagnosticGeometry = null;
   let intrinsicGeometry = null;
-  let displayGeometry = null;
 
   function geometry(width, height, source) {
     width = Number(width) || 0;
@@ -109,9 +83,9 @@
     const a = diagnosticGeometry;
     const b = intrinsicGeometry;
     if (a && b && a.portrait !== b.portrait) {
-      // A rotation disagreement is exactly the case that used to crop phone
-      // videos. Favor the portrait interpretation; "contain" then letterboxes
-      // safely instead of cutting picture content off.
+      // When container rotation metadata and Chromium's coded dimensions disagree,
+      // prefer the portrait interpretation. contain then letterboxes safely rather
+      // than cropping real image content.
       return a.portrait ? a : b;
     }
     return a || b || null;
@@ -120,7 +94,6 @@
   function fitVideoBox() {
     const chosen = chooseGeometry();
     if (!viewer.open || !chosen) return;
-    displayGeometry = chosen;
 
     const stageWidth = stage.clientWidth || 0;
     const stageHeight = stage.clientHeight || 0;
@@ -144,7 +117,6 @@
     video.style.setProperty('object-fit', 'contain', 'important');
     video.style.setProperty('object-position', 'center center', 'important');
 
-    // Class changes can resize the player shell; settle once more after layout.
     requestAnimationFrame(() => {
       const current = chooseGeometry();
       if (!viewer.open || !current) return;
@@ -189,40 +161,30 @@
     else stage.requestFullscreen?.();
   });
 
-  video.addEventListener('loadstart', () => {
-    if (viewer.open) boostStartupPriority();
-  });
-
+  video.addEventListener('loadstart', hideInitialAnalysisNotice);
   video.addEventListener('loadedmetadata', () => {
-    releaseStartupPriority();
+    hideInitialAnalysisNotice();
     readIntrinsicGeometry();
     readDiagnosticGeometry();
     resetWatchdog();
   });
   video.addEventListener('loadeddata', () => {
-    releaseStartupPriority();
+    hideInitialAnalysisNotice();
     readIntrinsicGeometry();
     fitVideoBox();
   });
-  video.addEventListener('canplay', releaseStartupPriority);
   video.addEventListener('resize', () => {
     readIntrinsicGeometry();
     fitVideoBox();
   });
-  video.addEventListener('error', releaseStartupPriority);
-  video.addEventListener('abort', releaseStartupPriority);
   video.addEventListener('seeking', () => { lastSeekAt = performance.now(); });
   video.addEventListener('seeked', resetWatchdog);
   video.addEventListener('emptied', resetWatchdog);
 
-  // A path change means the user has selected a different video. Give that
-  // startup read priority before Chromium manages to emit "play".
   new MutationObserver(() => {
     diagnosticGeometry = null;
     intrinsicGeometry = null;
-    displayGeometry = null;
     clearVideoBox();
-    if (viewer.open && (pathNode.textContent || '').trim()) boostStartupPriority();
   }).observe(pathNode, {subtree:true, childList:true, characterData:true});
 
   if (diagnostics) {
@@ -271,8 +233,6 @@
     const now = performance.now();
     stalls.push(now);
     stalls = stalls.filter(t => now - t < 9000);
-    // A single buffering event is normal. Repeated events are only surfaced as
-    // a recommendation; they do not trigger compatibility work automatically.
     if (stalls.length >= 5) {
       stalls = [];
       markUnstable('浏览器连续多次等待视频数据');
@@ -296,11 +256,8 @@
 
   viewer.addEventListener('close', () => {
     const path = (pathNode.textContent || '').trim();
-    releaseStartupPriority();
-    postActivity({playing:false,seeking:false});
     diagnosticGeometry = null;
     intrinsicGeometry = null;
-    displayGeometry = null;
     clearVideoBox();
     resetWatchdog();
     viewer.classList.remove('lh-player-portrait','lh-player-landscape');
