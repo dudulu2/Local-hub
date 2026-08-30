@@ -82,6 +82,15 @@ def main() -> None:
         assert catalog.stats()["videos"] == 18
         assert any(row["path"] == "incoming" for row in catalog.folders())
 
+        # A manual refresh is also used after LocalHub rename/move operations.
+        # Path changes from those workflows must not look like newly copied media.
+        touch(root / "manual-only.mp4", 1900)
+        catalog.refresh(wait=True, track_new=False)
+        manual_view = catalog.list_view("new", limit=30)
+        assert manual_view["total"] == 1, manual_view
+        assert all(item["id"] != "manual-only.mp4" for item in manual_view["items"])
+        assert catalog.stats()["videos"] == 19
+
         # Re-polling does not duplicate the same discovery.
         catalog.last_change_check = 0.0
         new_again = catalog.list_view("new", limit=30)
