@@ -216,6 +216,7 @@ def configure_server(root: Path):
     import io_support
     import auto_tag_support
     import siglip_support
+    import ai_center_support
 
     app_dir = Path(server.APP_DIR)
     server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
@@ -236,6 +237,7 @@ def configure_server(root: Path):
     io_support.install(server)
     auto_tag_support.install(server, smart_mode)
     siglip_support.install(server, auto_tag_support)
+    ai_center_support.install(server, auto_tag_support, siglip_support)
     cleanup_compat_cache(root)
     return server
 
@@ -270,6 +272,7 @@ def self_test() -> int:
         import recommendation_support
         import auto_tag_support
         import siglip_support
+        import ai_center_support
         import interactive_preview_support
         if not callable(getattr(compat_support, "install", None)):
             return 11
@@ -281,11 +284,14 @@ def self_test() -> int:
             return 14
         if not callable(getattr(interactive_preview_support, "install", None)):
             return 15
+        if not callable(getattr(ai_center_support, "install", None)):
+            return 16
         app_dir = Path(server.APP_DIR)
         for name in (
             "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
             "move_branding.js", "v23_features.js", "v23_features.css", "v23_player_fix.js", "v23_player_fix.css",
             "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",
+            "ai_center.js", "ai_center.css",
         ):
             if not (app_dir / name).exists():
                 return 20
@@ -300,7 +306,7 @@ def self_test() -> int:
                 return 30
             with local_urlopen(base + "/", timeout=3.0) as response:
                 body = response.read()
-                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body:
+                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body or b"ai_center.js" not in body:
                     return 31
             with local_urlopen(base + "/api/smart/home", timeout=5.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))

@@ -27,6 +27,8 @@ a = Analysis(
         ('auto_tag_ui.js', '.'),
         ('playback_stability.css', '.'),
         ('playback_stability.js', '.'),
+        ('ai_center.css', '.'),
+        ('ai_center.js', '.'),
     ] + imageio_datas,
     hiddenimports=[
         'pystray._win32',
@@ -35,6 +37,8 @@ a = Analysis(
         'numpy',
         'onnxruntime',
         'sentencepiece',
+        'ai_settings_support',
+        'ai_center_support',
     ] + imageio_hiddenimports,
     hookspath=[],
     hooksconfig={},
