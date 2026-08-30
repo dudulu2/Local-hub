@@ -148,6 +148,11 @@ with TemporaryDirectory() as tmp:
         assert launcher.wait_health(base, 5.0), "AI-center launcher server did not become healthy"
         with launcher.local_urlopen(base + "/", timeout=5.0) as response:
             html = response.read().decode("utf-8")
+            csp = response.headers.get("Content-Security-Policy", "")
+            permissions = response.headers.get("Permissions-Policy", "")
+        assert "connect-src 'self'" in csp, "browser UI is allowed to connect to external origins"
+        assert "object-src 'none'" in csp and "frame-src 'none'" in csp, "browser embedding policy is too permissive"
+        assert "camera=()" in permissions and "microphone=()" in permissions, "browser device permissions are not disabled"
         assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"
         assert "/ai_first_run.js" in html and "/ai_first_run.css" in html, "AI first-run assets are not injected"
         assert 'id="tagCategoryNav"' in html and "Tag / 分类" in html, "Tag/category sidebar entry is missing"
@@ -173,4 +178,4 @@ with TemporaryDirectory() as tmp:
         httpd.server_close()
 
 
-print("launcher lifecycle, privacy, offline onboarding, Tag navigation, and balanced AI smoke test passed")
+print("launcher lifecycle, backend/browser privacy, offline onboarding, Tag navigation, and balanced AI smoke test passed")
