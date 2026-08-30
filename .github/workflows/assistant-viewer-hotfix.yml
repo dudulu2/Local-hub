@@ -1,4 +1,4 @@
-name: Wire AI center into LocalHub build
+name: Wire AI center into packaged LocalHub
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
         with:
           ref: fix/tray-lifecycle-2.4.1
           fetch-depth: 0
-      - name: Wire AI center modules
+      - name: Patch launcher and PyInstaller spec
         shell: bash
         run: |
           python - <<'PY'
@@ -26,19 +26,13 @@ jobs:
           launcher = Path('launcher.py')
           text = launcher.read_text('utf-8')
           if 'import ai_center_support' not in text:
-              text = text.replace(
-                  '    import siglip_support\n',
-                  '    import siglip_support\n    import ai_center_support\n',
-                  1,
-              )
+              text = text.replace('    import siglip_support\n', '    import siglip_support\n    import ai_center_support\n', 1)
           if 'ai_center_support.install(server, auto_tag_support, siglip_support)' not in text:
               text = text.replace(
                   '    siglip_support.install(server, auto_tag_support)\n    cleanup_compat_cache(root)\n',
                   '    siglip_support.install(server, auto_tag_support)\n    ai_center_support.install(server, auto_tag_support, siglip_support)\n    cleanup_compat_cache(root)\n',
                   1,
               )
-          # Self-test imports/checks the new backend and static assets so a package
-          # can never pass CI while silently omitting the dedicated AI center.
           if 'import ai_center_support\n        import interactive_preview_support' not in text:
               text = text.replace(
                   '        import siglip_support\n        import interactive_preview_support\n',
@@ -80,42 +74,13 @@ jobs:
                   1,
               )
           spec.write_text(text, 'utf-8')
-
-          workflow = Path('.github/workflows/build-windows.yml')
-          text = workflow.read_text('utf-8')
-          # Add path triggers to both push and pull_request sections.
-          if text.count("      - 'ai_center.*'") < 2:
-              text = text.replace(
-                  "      - 'auto_tag_ui.*'\n",
-                  "      - 'auto_tag_ui.*'\n      - 'ai_center.*'\n      - 'ai_*support.py'\n",
-              )
-          old_compile = 'visual_index.py auto_tag_prompts.py auto_tag_support.py siglip_encoder.py siglip_support.py tools/smoke_smart.py'
-          new_compile = 'visual_index.py auto_tag_prompts.py auto_tag_support.py siglip_encoder.py siglip_support.py ai_settings_support.py ai_center_support.py tools/smoke_smart.py'
-          text = text.replace(old_compile, new_compile)
-          if 'tools/smoke_ai_center.py' not in text.split('- name: Validate frontend JavaScript', 1)[0]:
-              text = text.replace(
-                  'tools/smoke_playback_stability.py tools/prepare_siglip_bundle.py',
-                  'tools/smoke_playback_stability.py tools/smoke_ai_center.py tools/prepare_siglip_bundle.py',
-                  1,
-              )
-          if 'node --check .\\ai_center.js' not in text:
-              text = text.replace(
-                  '          node --check .\\playback_stability.js\n',
-                  '          node --check .\\playback_stability.js\n          node --check .\\ai_center.js\n',
-                  1,
-              )
-          if '- name: AI center settings smoke test' not in text:
-              text = text.replace(
-                  '      - name: Auto Tag low-risk smoke test\n        run: python tools/smoke_auto_tag.py\n',
-                  '      - name: Auto Tag low-risk smoke test\n        run: python tools/smoke_auto_tag.py\n\n      - name: AI center settings smoke test\n        run: python tools/smoke_ai_center.py\n',
-                  1,
-              )
-          workflow.write_text(text, 'utf-8')
           PY
 
+          python -m py_compile ai_settings_support.py ai_center_support.py launcher.py
+          node --check ai_center.js
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add launcher.py LocalHub.spec .github/workflows/build-windows.yml
+          git add launcher.py LocalHub.spec
           if git diff --cached --quiet; then
             echo 'No wiring changes needed'
           else
