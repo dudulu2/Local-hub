@@ -67,6 +67,26 @@ def main() -> None:
         found = catalog.list_view("search", q="collection-03", limit=30)
         assert found["total"] >= 1
 
+        # Existing media is the launch baseline and must never appear as "new".
+        new_before = catalog.list_view("new", limit=30)
+        assert new_before["total"] == 0, new_before
+
+        # Dropping a video into an existing or new folder should be discovered by
+        # the cheap path watcher, then promoted through a real catalog refresh.
+        touch(root / "incoming" / "fresh-video.mp4", 2048)
+        catalog.last_change_check = 0.0
+        new_after = catalog.list_view("new", limit=30)
+        assert new_after["catalogChanged"] is True, new_after
+        assert new_after["total"] == 1, new_after
+        assert new_after["items"][0]["id"] == "incoming/fresh-video.mp4"
+        assert catalog.stats()["videos"] == 18
+        assert any(row["path"] == "incoming" for row in catalog.folders())
+
+        # Re-polling does not duplicate the same discovery.
+        catalog.last_change_check = 0.0
+        new_again = catalog.list_view("new", limit=30)
+        assert new_again["total"] == 1, new_again
+
         deadline = time.monotonic() + 5
         while catalog.building and time.monotonic() < deadline:
             time.sleep(0.02)
