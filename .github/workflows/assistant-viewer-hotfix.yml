@@ -17,7 +17,7 @@ jobs:
         with:
           ref: fix/tray-lifecycle-2.4.1
           fetch-depth: 0
-      - name: Patch launcher and PyInstaller spec
+      - name: Patch AI center wiring
         shell: bash
         run: |
           python - <<'PY'
@@ -30,33 +30,23 @@ jobs:
           if 'ai_center_support.install(server, auto_tag_support, siglip_support)' not in text:
               text = text.replace(
                   '    siglip_support.install(server, auto_tag_support)\n    cleanup_compat_cache(root)\n',
-                  '    siglip_support.install(server, auto_tag_support)\n    ai_center_support.install(server, auto_tag_support, siglip_support)\n    cleanup_compat_cache(root)\n',
-                  1,
-              )
+                  '    siglip_support.install(server, auto_tag_support)\n    ai_center_support.install(server, auto_tag_support, siglip_support)\n    cleanup_compat_cache(root)\n', 1)
           if 'import ai_center_support\n        import interactive_preview_support' not in text:
               text = text.replace(
                   '        import siglip_support\n        import interactive_preview_support\n',
-                  '        import siglip_support\n        import ai_center_support\n        import interactive_preview_support\n',
-                  1,
-              )
+                  '        import siglip_support\n        import ai_center_support\n        import interactive_preview_support\n', 1)
           if 'return 16' not in text:
               text = text.replace(
                   '        if not callable(getattr(interactive_preview_support, "install", None)):\n            return 15\n',
-                  '        if not callable(getattr(interactive_preview_support, "install", None)):\n            return 15\n        if not callable(getattr(ai_center_support, "install", None)):\n            return 16\n',
-                  1,
-              )
+                  '        if not callable(getattr(interactive_preview_support, "install", None)):\n            return 15\n        if not callable(getattr(ai_center_support, "install", None)):\n            return 16\n', 1)
           if '"ai_center.js", "ai_center.css"' not in text:
               text = text.replace(
                   '            "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",\n',
-                  '            "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",\n            "ai_center.js", "ai_center.css",\n',
-                  1,
-              )
+                  '            "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",\n            "ai_center.js", "ai_center.css",\n', 1)
           if 'b"ai_center.js" not in body' not in text:
               text = text.replace(
                   '                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body:\n',
-                  '                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body or b"ai_center.js" not in body:\n',
-                  1,
-              )
+                  '                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body or b"ai_center.js" not in body:\n', 1)
           launcher.write_text(text, 'utf-8')
 
           spec = Path('LocalHub.spec')
@@ -64,26 +54,38 @@ jobs:
           if "('ai_center.css', '.')" not in text:
               text = text.replace(
                   "        ('playback_stability.js', '.'),\n",
-                  "        ('playback_stability.js', '.'),\n        ('ai_center.css', '.'),\n        ('ai_center.js', '.'),\n",
-                  1,
-              )
+                  "        ('playback_stability.js', '.'),\n        ('ai_center.css', '.'),\n        ('ai_center.js', '.'),\n", 1)
           if "'ai_center_support'" not in text:
               text = text.replace(
                   "        'sentencepiece',\n",
-                  "        'sentencepiece',\n        'ai_settings_support',\n        'ai_center_support',\n",
-                  1,
-              )
+                  "        'sentencepiece',\n        'ai_settings_support',\n        'ai_center_support',\n        'ai_balanced_siglip',\n", 1)
+          elif "'ai_balanced_siglip'" not in text:
+              text = text.replace("        'ai_center_support',\n", "        'ai_center_support',\n        'ai_balanced_siglip',\n", 1)
           spec.write_text(text, 'utf-8')
+
+          settings = Path('ai_settings_support.py')
+          text = settings.read_text('utf-8')
+          if 'import ai_balanced_siglip' not in text:
+              text = text.replace('from pathlib import Path\n', 'from pathlib import Path\n\nimport ai_balanced_siglip\n', 1)
+          if 'ai_balanced_siglip.set_mode(self.root, self._settings.get("backgroundMode", "balanced"))' not in text:
+              text = text.replace(
+                  '        self._settings = self._load()\n',
+                  '        self._settings = self._load()\n        ai_balanced_siglip.set_mode(self.root, self._settings.get("backgroundMode", "balanced"))\n', 1)
+          if 'ai_balanced_siglip.set_mode(self.root, clean.get("backgroundMode", "balanced"))' not in text:
+              text = text.replace(
+                  '            self._settings = clean\n            return copy.deepcopy(clean)\n',
+                  '            self._settings = clean\n            ai_balanced_siglip.set_mode(self.root, clean.get("backgroundMode", "balanced"))\n            return copy.deepcopy(clean)\n', 1)
+          settings.write_text(text, 'utf-8')
           PY
 
-          python -m py_compile ai_settings_support.py ai_center_support.py launcher.py
+          python -m py_compile ai_balanced_siglip.py ai_settings_support.py ai_center_support.py launcher.py
           node --check ai_center.js
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add launcher.py LocalHub.spec
+          git add launcher.py LocalHub.spec ai_settings_support.py
           if git diff --cached --quiet; then
             echo 'No wiring changes needed'
           else
-            git commit -m 'build: wire dedicated AI center into packaged LocalHub'
+            git commit -m 'fix: make balanced AI inference work during playback'
             git push origin HEAD:fix/tray-lifecycle-2.4.1
           fi
