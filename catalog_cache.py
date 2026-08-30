@@ -99,6 +99,10 @@ def install(smart_mode_module) -> None:
                     with self.lock:
                         if self.building:
                             return
+                        # This background refresh compares the live filesystem to
+                        # the previous-run snapshot, so additions made while the
+                        # app was closed are legitimate "new videos".
+                        self._track_next_refresh=True
                         self.building=True
                     threading.Thread(target=self._refresh_worker,name="LocalHubCatalogRefresh",daemon=True).start()
                     return
