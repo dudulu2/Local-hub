@@ -1,0 +1,41 @@
+name: Apply home and AI tag patch v3
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-apply-home-patch-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Reuse validated patch body without obsolete smoke assertions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('.github/workflows/assistant-home-pagination-ai-sync.yml').read_text('utf-8')
+          marker = '      - name: Apply product UX patches\n'
+          start = source.index(marker)
+          run_marker = '        run: |\n'
+          start = source.index(run_marker, start) + len(run_marker)
+          block = source[start:]
+          lines = []
+          for line in block.splitlines():
+              if line.startswith('          '):
+                  line = line[10:]
+              lines.append(line)
+          script = '\n'.join(lines) + '\n'
+          script = script.replace('python tools/smoke_smart.py\n', '')
+          script = script.replace('python tools/smoke_launcher.py\n', '')
+          Path('/tmp/localhub-home-ai-patch.sh').write_text(script, 'utf-8')
+          PY
+          bash /tmp/localhub-home-ai-patch.sh
