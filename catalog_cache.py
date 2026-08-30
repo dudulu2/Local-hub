@@ -69,6 +69,11 @@ def install(smart_mode_module) -> None:
             with self.lock:
                 self.items=items; self.by_id=by_id; self.direct_by_folder=direct
                 self.folder_stats=stats; self.search_rows=searches; self.built_at=built_at or time.time()
+                # The snapshot is the previous known library baseline. Restoring
+                # it lets the background refresh identify videos copied in while
+                # LocalHub was closed instead of silently treating them as old.
+                self.video_ids={item["id"] for item in items if item.get("type")=="video"}
+                self.initialized=True
 
         def _save_snapshot(self) -> None:
             with self.lock:
