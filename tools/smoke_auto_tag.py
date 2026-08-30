@@ -16,6 +16,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import launcher
+import ai_taxonomy_v2
+import ai_settings_support
+from ai_tag_sync_support import AITagReconciler
 import siglip_encoder as siglip_module
 from auto_tag_prompts import DEFAULT_TAG_PROMPTS
 from io_scheduler import IOScheduler
@@ -126,6 +129,28 @@ def smoke_offline_install(tmp: Path, root: Path) -> None:
 
 
 def main() -> None:
+    # Professional built-ins all have enough semantic granularity for a useful
+    # within-group competition. Old v1 settings upgrade without losing opt-ins.
+    assert all(len(group["tags"]) >= 20 for group in ai_taxonomy_v2.PROFESSIONAL_GROUPS)
+    migrated = ai_settings_support.normalize_settings({
+        "version": 1,
+        "aiOptIn": True,
+        "groups": [{"id":"adult", "name":"色情", "enabled":True, "tags":[]}],
+    })
+    assert migrated["version"] == 2
+    adult = next(group for group in migrated["groups"] if group["id"] == "adult")
+    assert adult["enabled"] is True and len(adult["tags"]) >= 20
+
+    grouped_settings = {"groups":[
+        {"id":"entertainment","enabled":True,"tags":[{"tag":"直播"},{"tag":"播客"},{"tag":"访谈"},{"tag":"综艺"}]},
+        {"id":"scenery","enabled":True,"tags":[{"tag":"海边"},{"tag":"山地"},{"tag":"森林"},{"tag":"雪景"}]},
+    ]}
+    picked = AITagReconciler._select(
+        [("直播",.31),("播客",.282),("访谈",.274),("综艺",.268),("海边",.201),("山地",.199),("森林",.198),("雪景",.197)],
+        grouped_settings,
+    )
+    assert "直播" in picked and not any(tag in picked for tag in {"海边","山地","森林","雪景"}), picked
+
     scheduler = IOScheduler()
     assert not scheduler.busy()
     scheduler.note(playing=True)

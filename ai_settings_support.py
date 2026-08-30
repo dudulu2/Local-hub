@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import ai_balanced_siglip
+import ai_taxonomy_v2
 
 
 def _tag(tag: str, *prompts: str) -> dict:
@@ -100,8 +101,13 @@ DEFAULT_GROUPS = [
 ]
 
 
+# v2 replaces the small starter taxonomy with a professional built-in set.
+# The old literal above is intentionally retained as historical source context;
+# runtime defaults and migrations use the v2 taxonomy below.
+DEFAULT_GROUPS = copy.deepcopy(ai_taxonomy_v2.PROFESSIONAL_GROUPS)
+
 DEFAULT_SETTINGS = {
-    "version": 1,
+    "version": 2,
     "autoAnalyzeLibrary": True,
     "backgroundMode": "balanced",
     "showViewerButton": True,
@@ -117,9 +123,9 @@ def _clean_text(value, *, limit: int) -> str:
 
 
 def normalize_settings(raw) -> dict:
-    source = raw if isinstance(raw, dict) else {}
+    source = ai_taxonomy_v2.upgrade_settings(raw if isinstance(raw, dict) else {})
     result = {
-        "version": 1,
+        "version": 2,
         "autoAnalyzeLibrary": bool(source.get("autoAnalyzeLibrary", DEFAULT_SETTINGS["autoAnalyzeLibrary"])),
         "backgroundMode": str(source.get("backgroundMode", DEFAULT_SETTINGS["backgroundMode"])),
         "showViewerButton": bool(source.get("showViewerButton", DEFAULT_SETTINGS["showViewerButton"])),

@@ -18,6 +18,30 @@
 
   document.documentElement.dataset.interactionFix = '2.4-probe-failfast';
 
+  // LocalHub is already reading local files. Hide browser download/export
+  // affordances so playback behaves like a library player rather than a web
+  // download page. This removes Chromium's media-menu Download item, blocks the
+  // video context menu/drag-out path, and keeps the media inline.
+  function enforceNoDownload() {
+    if (!video) return;
+    video.setAttribute('controlslist', 'nodownload noremoteplayback');
+    video.controlsList?.add?.('nodownload');
+    video.controlsList?.add?.('noremoteplayback');
+    video.disableRemotePlayback = true;
+    video.disablePictureInPicture = true;
+    video.setAttribute('draggable', 'false');
+  }
+  enforceNoDownload();
+  video?.addEventListener('loadedmetadata', enforceNoDownload);
+  video?.addEventListener('contextmenu', event => { event.preventDefault(); event.stopPropagation(); });
+  video?.addEventListener('dragstart', event => event.preventDefault());
+  window.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === 's') {
+      event.preventDefault();
+      toast('LocalHub 是本地媒体库，无需下载');
+    }
+  }, true);
+
   // Media diagnostics are useful, but they are never allowed to hold the player
   // hostage. smart_ui calls the global fetch binding at request time, so this
   // small guard gives only /api/media/probe a strict browser-side deadline.

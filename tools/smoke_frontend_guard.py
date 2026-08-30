@@ -30,6 +30,12 @@ assert "/api/ai/tag-sync?since=" in ai_tag_sync
 assert "localhub:ai-tags-updated" in ai_tag_sync
 assert "/api/rating?path=" in ai_tag_sync
 
+# Browser-native media Download must stay unavailable on local playback.
+assert 'controlslist="nodownload noremoteplayback"' in html
+assert "function enforceNoDownload()" in player_fix
+assert "video.controlsList?.add?.('nodownload')" in player_fix
+assert "video?.addEventListener('contextmenu'" in player_fix
+
 # v23_features still contains the original rescan repaint implementation. The
 # guard above narrows its observer to disabled only, preventing self-triggering
 # childList loops.

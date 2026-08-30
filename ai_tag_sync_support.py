@@ -194,20 +194,63 @@ class AITagReconciler:
         return scored
 
     @staticmethod
-    def _select(scored: list[tuple[str, float]]) -> list[str]:
+    def _select(scored: list[tuple[str, float]], settings: dict) -> list[str]:
+        """Choose tags inside their semantic group instead of one global race.
+
+        A 190-tag vocabulary is useful only if unrelated concepts do not steal
+        each other's slots.  Each enabled group gets its own robust distribution
+        and must show real separation from that group's median/runner-up.  Weak
+        groups are allowed to emit nothing; this is intentionally precision-first.
+        """
         if not scored:
             return []
-        best = scored[0][1]
-        values = [score for _, score in scored]
-        median = statistics.median(values)
-        spread = statistics.pstdev(values) if len(values) > 1 else 0.0
-        # Adaptive zero-shot cut: keep tags close to the best match and clearly
-        # above the middle of the candidate distribution. Always keep at least
-        # the strongest match so a successfully indexed video receives a useful
-        # AI classification instead of an empty result.
-        cutoff = max(best - 0.045, median + spread * 0.35)
-        selected = [tag for tag, score in scored if score >= cutoff][:4]
-        return selected or [scored[0][0]]
+        score_map = {str(tag).casefold(): (str(tag), float(score)) for tag, score in scored}
+        selected: list[str] = []
+        selected_keys: set[str] = set()
+
+        for group in settings.get("groups", []):
+            if not isinstance(group, dict) or not group.get("enabled"):
+                continue
+            candidates: list[tuple[str, float]] = []
+            for row in group.get("tags", []):
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("tag", "")).strip().casefold()
+                if key and key in score_map:
+                    candidates.append(score_map[key])
+            candidates.sort(key=lambda row: row[1], reverse=True)
+            if len(candidates) < 3:
+                continue
+
+            values = [score for _, score in candidates]
+            median = statistics.median(values)
+            spread = statistics.pstdev(values) if len(values) > 1 else 0.0
+            best = candidates[0][1]
+            runner = candidates[1][1]
+            best_lift = best - median
+            gap = best - runner
+
+            # Flat distributions mean SigLIP does not really know which label is
+            # better.  Do not force a tag just because every group has a winner.
+            min_lift = max(0.006, spread * 0.72)
+            min_gap = max(0.0022, spread * 0.12)
+            if best_lift < min_lift or (gap < min_gap and best_lift < max(0.012, spread * 1.35)):
+                continue
+
+            group_id = str(group.get("id", ""))
+            max_tags = 5 if group_id == "all" else 2
+            cutoff = max(median + max(0.0045, spread * 0.62), best - (0.024 if group_id == "all" else 0.016))
+            for tag, score in candidates:
+                if len([x for x in selected if x.casefold() in {r[0].casefold() for r in candidates}]) >= max_tags:
+                    break
+                if score < cutoff:
+                    break
+                key = tag.casefold()
+                if key not in selected_keys:
+                    selected_keys.add(key)
+                    selected.append(tag)
+
+        return selected[:12]
 
     def _publish_catalog_tags(self, path: str, tags: list[str]) -> None:
         catalog = getattr(self.store, "_smart_catalog", None)
@@ -236,7 +279,7 @@ class AITagReconciler:
         scored = self._prompt_scores(path)
         if scored is None:
             return "retry"
-        desired = self._select(scored)
+        desired = self._select(scored, self.settings())
         previous_ai = self.assignments.get(path)
         existing = self.store.tags_for(path)
         previous_keys = {tag.casefold() for tag in previous_ai}
