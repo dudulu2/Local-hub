@@ -1,3 +1,4 @@
+import json
 import sys
 import threading
 from pathlib import Path
@@ -102,4 +103,32 @@ with TemporaryDirectory() as tmp:
         launcher.webbrowser.open = original_web_open
 
 
-print("launcher startup cleanup and lifecycle smoke test passed")
+# The real launcher composition must include the dedicated AI Center, its
+# persistent Tag-group settings API, and the default balanced background mode.
+# This catches wiring errors before PyInstaller runs.
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    httpd, port = launcher.create_http_server(root)
+    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        assert launcher.wait_health(base, 5.0), "AI-center launcher server did not become healthy"
+        with launcher.local_urlopen(base + "/", timeout=5.0) as response:
+            html = response.read().decode("utf-8")
+        assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"
+
+        with launcher.local_urlopen(base + "/api/ai/overview", timeout=5.0) as response:
+            overview = json.loads(response.read().decode("utf-8"))
+        assert overview.get("ok") is True, "AI overview endpoint is unavailable"
+        assert overview["settings"]["backgroundMode"] == "balanced"
+        group_names = [group.get("name") for group in overview["settings"].get("groups", [])]
+        for expected in ("全部视频", "生活", "学习", "风景", "娱乐", "色情"):
+            assert expected in group_names, f"missing default AI Tag group: {expected}"
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2.0)
+        httpd.server_close()
+
+
+print("launcher startup cleanup, lifecycle, and AI-center smoke test passed")
