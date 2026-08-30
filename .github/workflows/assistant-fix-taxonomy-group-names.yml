@@ -1,0 +1,44 @@
+name: Fix taxonomy group names
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/assistant-fix-taxonomy-group-names.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Restore product-facing group names
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('ai_taxonomy_v2.py')
+          text = path.read_text('utf-8')
+          replacements = {
+              '"id": "all",\n        "name": "基础属性"': '"id": "all",\n        "name": "全部视频"',
+              '"id": "study",\n        "name": "学习 / 知识 / 职场"': '"id": "study",\n        "name": "学习"',
+              '"id": "scenery",\n        "name": "场景 / 地点"': '"id": "scenery",\n        "name": "风景"',
+              '"id": "entertainment",\n        "name": "娱乐 / 视频形式"': '"id": "entertainment",\n        "name": "娱乐"',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'missing taxonomy anchor: {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, 'utf-8')
+          PY
+          python -m py_compile ai_taxonomy_v2.py ai_settings_support.py ai_tag_sync_support.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ai_taxonomy_v2.py
+          git commit -m 'fix: preserve user-facing AI Tag group names'
+          git push origin HEAD:fix/tray-lifecycle-2.4.1
