@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import threading
@@ -16,6 +17,9 @@ import smart_thumbnail
 HOME_MIN = 13
 HOME_MAX = 15
 PAGE_LIMIT = 30
+CHANGE_CHECK_INTERVAL = 8.0
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v", ".mov", ".mkv", ".avi", ".ogv", ".mpeg", ".mpg", ".ts"}
+WATCH_IGNORED_DIRS = {".git", ".localhub", "__pycache__", "node_modules", ".idea", ".vscode"}
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -94,6 +98,10 @@ class Catalog:
         self.direct_by_folder: dict[str, list[dict]] = defaultdict(list)
         self.folder_stats: dict[str, dict] = {}
         self.search_rows: list[tuple[str, dict]] = []
+        self.video_ids: set[str] = set()
+        self.session_new_ids: list[str] = []
+        self.initialized = False
+        self.last_change_check = 0.0
         self.built_at = 0.0
         self.building = False
         self._start_refresh()
@@ -115,6 +123,7 @@ class Catalog:
         try:
             items = self.store.scan()
             by_id = {item["id"]: item for item in items}
+            current_video_ids = {item["id"] for item in items if item["type"] == "video"}
             direct: dict[str, list[dict]] = defaultdict(list)
             stats: dict[str, dict] = {}
             for item in items:
@@ -133,12 +142,37 @@ class Catalog:
                 searches.append((blob, item))
 
             with self.lock:
+                previous_video_ids = set(self.video_ids)
+                was_initialized = self.initialized
                 self.items = items
                 self.by_id = by_id
                 self.direct_by_folder = direct
                 self.folder_stats = stats
                 self.search_rows = searches
+                self.video_ids = current_video_ids
                 self.built_at = time.time()
+
+                if was_initialized:
+                    added = [
+                        item["id"]
+                        for item in sorted(items, key=lambda row: row.get("modified", 0), reverse=True)
+                        if item["type"] == "video" and item["id"] not in previous_video_ids
+                    ]
+                    existing = [item_id for item_id in self.session_new_ids if item_id in by_id]
+                    merged: list[str] = []
+                    seen: set[str] = set()
+                    for item_id in added + existing:
+                        if item_id in seen:
+                            continue
+                        seen.add(item_id)
+                        merged.append(item_id)
+                    self.session_new_ids = merged
+                else:
+                    # Everything present during the first catalog build is the
+                    # baseline. "New video" only means added while this LocalHub
+                    # session is running, so existing libraries never light up as
+                    # unread on every launch.
+                    self.initialized = True
         finally:
             with self.lock:
                 self.building = False
@@ -146,6 +180,44 @@ class Catalog:
 
     def _await(self) -> None:
         self.ready.wait(20)
+
+    def _quick_video_ids(self) -> set[str]:
+        """Cheap addition/removal check: paths only, no media stat/probe work."""
+        result: set[str] = set()
+        root = self.store.root
+        for current, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in WATCH_IGNORED_DIRS and not d.startswith(".")]
+            current_path = Path(current)
+            for filename in files:
+                if Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
+                    continue
+                absolute = current_path / filename
+                try:
+                    relative = absolute.relative_to(root)
+                except ValueError:
+                    continue
+                if any(part.startswith(".") for part in relative.parts):
+                    continue
+                result.add(relative.as_posix())
+        return result
+
+    def detect_changes(self) -> bool:
+        """Refresh the full catalog only when a throttled path check changed."""
+        self._await()
+        now = time.monotonic()
+        with self.lock:
+            if now - self.last_change_check < CHANGE_CHECK_INTERVAL:
+                return False
+            self.last_change_check = now
+            known = set(self.video_ids)
+        try:
+            current = self._quick_video_ids()
+        except OSError:
+            return False
+        if current == known:
+            return False
+        self.refresh(wait=True)
+        return True
 
     def stats(self) -> dict:
         self._await()
@@ -155,6 +227,7 @@ class Catalog:
             return {
                 "count": len(self.items), "videos": videos, "images": images,
                 "folders": len(self.folder_stats), "builtAt": int(self.built_at * 1000),
+                "newVideos": len(self.session_new_ids),
             }
 
     def folders(self, limit: int = 120) -> list[dict]:
@@ -229,7 +302,11 @@ class Catalog:
         return result
 
     def list_view(self, view: str, folder: str = "", q: str = "", offset: int = 0, limit: int = PAGE_LIMIT) -> dict:
-        self._await()
+        catalog_changed = False
+        if view == "new":
+            catalog_changed = self.detect_changes()
+        else:
+            self._await()
         limit = max(1, min(60, limit))
         offset = max(0, offset)
         if view == "folder":
@@ -254,6 +331,14 @@ class Catalog:
             matches.sort(key=lambda item: item.get("modified", 0), reverse=True)
             rows = [_media_public(item) for item in matches]
             title = f"搜索：{q}"
+        elif view == "new":
+            with self.lock:
+                rows = [
+                    _media_public(self.by_id[item_id])
+                    for item_id in self.session_new_ids
+                    if item_id in self.by_id and self.by_id[item_id]["type"] == "video"
+                ]
+            title = "新视频"
         else:
             with self.lock:
                 videos = [item for item in self.items if item["type"] == "video"]
@@ -261,7 +346,10 @@ class Catalog:
             rows = [_media_public(item) for item in videos]
             title = "全部视频"
         page = rows[offset: offset + limit]
-        return {"title": title, "items": page, "total": len(rows), "offset": offset, "limit": limit, "hasMore": offset + limit < len(rows)}
+        payload = {"title": title, "items": page, "total": len(rows), "offset": offset, "limit": limit, "hasMore": offset + limit < len(rows)}
+        if view == "new":
+            payload["catalogChanged"] = catalog_changed
+        return payload
 
     def by_ids(self, ids: list[str]) -> list[dict]:
         self._await()
@@ -287,6 +375,8 @@ def install(server_module) -> None:
     smart_html = app_dir / "smart_index.html"
     smart_js = app_dir / "smart_ui.js"
     smart_css = app_dir / "smart_ui.css"
+    server_module.STATIC_FILES["/library_experience.js"] = app_dir / "library_experience.js"
+    server_module.STATIC_FILES["/library_experience.css"] = app_dir / "library_experience.css"
 
     def make_handler(store):
         BaseHandler = original_make_handler(store)
