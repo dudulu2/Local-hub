@@ -39,6 +39,7 @@ a = Analysis(
         'sentencepiece',
         'ai_settings_support',
         'ai_center_support',
+        'ai_balanced_siglip',
     ] + imageio_hiddenimports,
     hookspath=[],
     hooksconfig={},

@@ -6,6 +6,8 @@ import os
 import threading
 from pathlib import Path
 
+import ai_balanced_siglip
+
 
 def _tag(tag: str, *prompts: str) -> dict:
     return {"tag": tag, "prompts": list(prompts)}
@@ -195,6 +197,7 @@ class AISettingsStore:
         self.path = self.root / ".localhub" / "ai-settings.json"
         self.lock = threading.RLock()
         self._settings = self._load()
+        ai_balanced_siglip.set_mode(self.root, self._settings.get("backgroundMode", "balanced"))
 
     def _load(self) -> dict:
         try:
@@ -214,6 +217,7 @@ class AISettingsStore:
             temp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), "utf-8")
             os.replace(temp, self.path)
             self._settings = clean
+            ai_balanced_siglip.set_mode(self.root, clean.get("backgroundMode", "balanced"))
             return copy.deepcopy(clean)
 
     def prompts(self) -> dict[str, tuple[str, ...]]:
