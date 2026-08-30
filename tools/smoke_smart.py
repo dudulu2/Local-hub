@@ -42,10 +42,15 @@ def main() -> None:
         catalog = Catalog(store)
         assert catalog.ready.wait(10), "catalog did not become ready"
 
-        home = catalog.home()
-        assert 13 <= len(home) <= 15, len(home)
-        assert all(item["kind"] == "video" for item in home)
-        assert sum(1 for item in home if not item["folder"]) == 5
+        # Home is now a paged random browsing sequence. With only five videos
+        # directly beside LocalHub, page one keeps all five and fills the rest
+        # from subfolders up to 15.
+        home = catalog.home(offset=0, limit=15, seed="initial-home")
+        assert home["total"] == 17, home
+        assert len(home["items"]) == 15, home
+        assert all(item["kind"] == "video" for item in home["items"])
+        assert sum(1 for item in home["items"] if not item["folder"]) == 5
+        assert home["hasMore"] is True
 
         folder = catalog.list_view("folder", "collection-00", limit=30)
         kinds = [item["kind"] for item in folder["items"]]
@@ -114,7 +119,7 @@ def main() -> None:
         first_ids = [row["id"] for row in home_round_one["items"]]
         second_ids = [row["id"] for row in home_round_two["items"]]
         assert not (set(first_ids) & set(second_ids)), (first_ids, second_ids)
-        assert len(first_ids + second_ids) == len(set(first_ids + second_ids))
+        assert len(first_ids + second_ids) == len(set(first_ids + second_ids)) == 21
         repeat_first = catalog.home(offset=0, limit=15, seed="smoke-home")
         assert [row["id"] for row in repeat_first["items"]] == first_ids
 
