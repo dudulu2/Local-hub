@@ -13,7 +13,7 @@ def _tag(tag: str, *prompts: str) -> dict:
 PROFESSIONAL_GROUPS = [
     {
         "id": "all",
-        "name": "基础属性",
+        "name": "全部视频",
         "enabled": True,
         "tags": [
             _tag("室内", "An indoor scene inside a room or building.", "Interior footage with walls, ceiling, furniture, or an indoor venue."),
@@ -75,7 +75,7 @@ PROFESSIONAL_GROUPS = [
     },
     {
         "id": "study",
-        "name": "学习 / 知识 / 职场",
+        "name": "学习",
         "enabled": True,
         "tags": [
             _tag("阅读", "Reading a book, document, article, or study material.", "A person visibly reading printed or digital text."),
@@ -106,7 +106,7 @@ PROFESSIONAL_GROUPS = [
     },
     {
         "id": "scenery",
-        "name": "场景 / 地点",
+        "name": "风景",
         "enabled": True,
         "tags": [
             _tag("城市街道", "A city street with roads, sidewalks, buildings, or urban traffic.", "Street-level urban city scenery."),
@@ -137,7 +137,7 @@ PROFESSIONAL_GROUPS = [
     },
     {
         "id": "entertainment",
-        "name": "娱乐 / 视频形式",
+        "name": "娱乐",
         "enabled": True,
         "tags": [
             _tag("游戏实况", "Gameplay footage or a person actively playing a video game.", "Video game screen and gaming activity are central."),
