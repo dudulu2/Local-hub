@@ -166,6 +166,56 @@ jobs:
           }
           Write-Host "Packaged LocalHub proxy-isolation self-test passed"
 
+      - name: Verify packaged EXE survives tray startup
+        shell: pwsh
+        run: |
+          Remove-Item .\dist\.localhub -Recurse -Force -ErrorAction SilentlyContinue
+          $env:LOCALHUB_NO_BROWSER = '1'
+          $launcherProcess = Start-Process -FilePath .\dist\LocalHub.exe -PassThru
+          try {
+            Start-Sleep -Seconds 4
+            $launcherProcess.Refresh()
+            if ($launcherProcess.HasExited) {
+              throw "Packaged LocalHub exited during normal startup with code $($launcherProcess.ExitCode)"
+            }
+
+            $runtimePath = '.\dist\.localhub\runtime.json'
+            if (-not (Test-Path $runtimePath)) {
+              throw 'Packaged LocalHub stayed alive but did not create runtime.json'
+            }
+
+            $runtime = Get-Content $runtimePath -Raw | ConvertFrom-Json
+            $serverPid = [int]$runtime.pid
+            $port = [int]$runtime.port
+            if (-not (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) {
+              throw "Runtime PID $serverPid is not alive"
+            }
+
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 5
+            if ($health.ok -ne $true) {
+              throw "Packaged LocalHub health check failed on port $port"
+            }
+            Write-Host "Packaged LocalHub stayed alive after tray startup; pid=$serverPid port=$port"
+          }
+          finally {
+            if (Test-Path '.\dist\.localhub\launcher-warning.log') {
+              Write-Host '--- launcher warnings ---'
+              Get-Content '.\dist\.localhub\launcher-warning.log'
+            }
+            if (Test-Path '.\dist\.localhub\startup-error.log') {
+              Write-Host '--- startup errors ---'
+              Get-Content '.\dist\.localhub\startup-error.log'
+            }
+            if (Test-Path '.\dist\.localhub\runtime.json') {
+              try {
+                $runtime = Get-Content '.\dist\.localhub\runtime.json' -Raw | ConvertFrom-Json
+                Stop-Process -Id ([int]$runtime.pid) -Force -ErrorAction SilentlyContinue
+              } catch {}
+            }
+            Stop-Process -Id $launcherProcess.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:LOCALHUB_NO_BROWSER -ErrorAction SilentlyContinue
+          }
+
       - name: Generate SHA256
         shell: pwsh
         run: |
