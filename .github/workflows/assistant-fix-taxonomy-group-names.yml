@@ -24,21 +24,15 @@ jobs:
           from pathlib import Path
           path = Path('ai_taxonomy_v2.py')
           text = path.read_text('utf-8')
-          replacements = {
-              '"id": "all",\n        "name": "基础属性"': '"id": "all",\n        "name": "全部视频"',
-              '"id": "study",\n        "name": "学习 / 知识 / 职场"': '"id": "study",\n        "name": "学习"',
-              '"id": "scenery",\n        "name": "场景 / 地点"': '"id": "scenery",\n        "name": "风景"',
-              '"id": "entertainment",\n        "name": "娱乐 / 视频形式"': '"id": "entertainment",\n        "name": "娱乐"',
-          }
-          for old, new in replacements.items():
-              if old not in text:
-                  raise SystemExit(f'missing taxonomy anchor: {old}')
-              text = text.replace(old, new, 1)
-          path.write_text(text, 'utf-8')
+          old = '"id": "adult",\n        "name": "成人内容"'
+          new = '"id": "adult",\n        "name": "色情"'
+          if old not in text:
+              raise SystemExit('missing adult taxonomy anchor')
+          path.write_text(text.replace(old, new, 1), 'utf-8')
           PY
           python -m py_compile ai_taxonomy_v2.py ai_settings_support.py ai_tag_sync_support.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add ai_taxonomy_v2.py
-          git commit -m 'fix: preserve user-facing AI Tag group names'
+          git commit -m 'fix: preserve adult Tag group display name'
           git push origin HEAD:fix/tray-lifecycle-2.4.1
