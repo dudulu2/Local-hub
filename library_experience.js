@@ -213,10 +213,13 @@
       if (delta > 0) announceNew(delta, total);
       lastNewTotal = total;
 
-      // A changed catalog may contain a brand-new top-level folder. Refresh the
-      // home snapshot only when the user is already on Home; never pull them out
-      // of a folder/search/player just to update the sidebar.
-      if (data.catalogChanged && document.querySelector('.main-nav button[data-route="home"]')?.classList.contains('active') && !refreshingHome) {
+      if (data.catalogChanged && newNav?.classList.contains('active')) {
+        // Keep the dedicated feed live without forcing navigation elsewhere.
+        newNav.click();
+      } else if (data.catalogChanged && document.querySelector('.main-nav button[data-route="home"]')?.classList.contains('active') && !refreshingHome) {
+        // A changed catalog may contain a brand-new top-level folder. Refresh the
+        // home snapshot only when the user is already on Home; never pull them out
+        // of a folder/search/player just to update the sidebar.
         refreshingHome = true;
         setTimeout(() => {
           try { brand?.click(); }
