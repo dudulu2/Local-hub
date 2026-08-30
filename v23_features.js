@@ -96,7 +96,7 @@
     const active = $('.folder-nav button.active');
     if (active?.dataset.folder != null) currentFolder = active.dataset.folder;
     const title = ($('#pageTitle')?.textContent || '').trim();
-    const specials = new Set(['首页','全部视频','图包 / 图册','收藏','继续观看','根目录']);
+    const specials = new Set(['首页','全部视频','图包 / 图册','Tag / 分类','标签分类','收藏','继续观看','根目录']);
     if (!specials.has(title) && title && !title.startsWith('搜索：')) currentFolder = title;
     if (title === '根目录') currentFolder = '';
     return currentFolder;

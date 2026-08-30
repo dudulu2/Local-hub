@@ -20,7 +20,7 @@
   if (tagNav) {
     tagNav.dataset.route = 'tags';
     tagNav.id = 'tagCategoryNav';
-    tagNav.innerHTML = '<span>#</span>标签分类';
+    tagNav.innerHTML = '<span>#</span>Tag / 分类';
   }
 
   const expanded = new Set();
@@ -238,7 +238,7 @@
     grid.innerHTML = '<div class="tag-category-loading">正在整理标签…</div>';
     if (pager) pager.classList.add('hidden');
     if (empty) empty.classList.add('hidden');
-    if (pageTitle) pageTitle.textContent = '标签分类';
+    if (pageTitle) pageTitle.textContent = 'Tag / 分类';
     if (meta) meta.textContent = '';
     if (hint) hint.textContent = '';
 
