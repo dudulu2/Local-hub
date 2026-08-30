@@ -19,5 +19,28 @@ jobs:
           fetch-depth: 0
       - name: Apply compatibility-safe viewer fixes
         shell: bash
-        env:
-          NAV_PATCH_B64: "Ci8vIExIX1JFQ09NTUVORF9OQVZJR0FUSU9OX0ZJWF9WMgooKCkgPT4gewogICd1c2Ugc3RyaWN0JzsKCiAgY29uc3Qgdmlld2VyID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignI3ZpZXdlcicpOwogIGNvbnN0IHBhdGhOb2RlID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignI3ZpZXdlclBhdGgnKTsKICBjb25zdCBzZWFyY2ggPSBkb2N1bWVudC5xdWVyeVNlbGVjdG9yKCcj c2VhcmNoSW5wdXQnKS;"
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          jobs = [
+              (Path('v23_features.js'), Path('.assistant/viewer_nav_patch.js'), 'LH_RECOMMEND_NAVIGATION_FIX_V2'),
+              (Path('playback_stability.js'), Path('.assistant/portrait_fit_patch.js'), 'LH_PORTRAIT_HARD_FIT_V2'),
+          ]
+          for target, patch, marker in jobs:
+              text = target.read_text('utf-8')
+              if marker in text:
+                  continue
+              addition = patch.read_text('utf-8').strip()
+              target.write_text(text.rstrip() + '\n\n' + addition + '\n', 'utf-8')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v23_features.js playback_stability.js
+          if git diff --cached --quiet; then
+            echo 'No patch needed'
+          else
+            git commit -m 'fix: reliable recommendation navigation and portrait fit'
+            git push origin HEAD:fix/tray-lifecycle-2.4.1
+          fi
