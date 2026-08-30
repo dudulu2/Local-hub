@@ -73,7 +73,11 @@
       headingLeft.insertBefore(back,title);
       back.addEventListener('click', () => {
         const folder = resolveCurrentFolder();
-        if (!folder) return;
+        if (!folder) {
+          $('#brandBtn')?.click();
+          setTimeout(updateBackButton, 60);
+          return;
+        }
         const parts = folder.replace(/\\/g,'/').split('/').filter(Boolean); parts.pop();
         navigateFolder(parts.join('/'));
       });
@@ -93,26 +97,30 @@
   }
 
   function resolveCurrentFolder() {
-    const active = $('.folder-nav button.active');
-    if (active?.dataset.folder != null) currentFolder = active.dataset.folder;
     const title = ($('#pageTitle')?.textContent || '').trim();
-    const specials = new Set(['首页','全部视频','图包 / 图册','Tag / 分类','标签分类','收藏','继续观看','根目录']);
-    if (!specials.has(title) && title && !title.startsWith('搜索：')) currentFolder = title;
-    if (title === '根目录') currentFolder = '';
+    const activeFolder = $('.folder-nav button.active');
+    const mainActive = $('.main-nav button.active');
+    const rootPages = new Set(['首页','全部视频','新视频','图包 / 图册','Tag / 分类','标签分类','收藏','继续观看','AI 分析','设置','根目录']);
+    if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;
+    else if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';
+    else if (title) currentFolder = title;
     return currentFolder;
   }
 
   function updateBackButton() {
     const back = $('#folderBackBtn'); if (!back) return;
     const title = ($('#pageTitle')?.textContent || '').trim();
-    const isFolder = title === '根目录' || (!!resolveCurrentFolder() && !title.startsWith('搜索：'));
-    back.classList.toggle('hidden', !isFolder || !resolveCurrentFolder());
+    const folder = resolveCurrentFolder();
+    const show = !!title && title !== '首页';
+    back.classList.toggle('hidden', !show);
+    back.title = folder ? '返回上级文件夹' : '返回首页';
+    back.setAttribute('aria-label', back.title);
   }
 
   function navigateFolder(folder) {
     currentFolder = folder || '';
     if (!folder) {
-      $('.main-nav button[data-route="root"]')?.click();
+      $('#brandBtn')?.click();
       setTimeout(updateBackButton,60);
       return true;
     }

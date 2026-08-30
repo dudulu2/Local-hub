@@ -223,6 +223,7 @@ def configure_server(root: Path):
     import auto_tag_support
     import siglip_support
     import ai_center_support
+    import ai_tag_sync_support
     import browser_privacy
 
     app_dir = Path(server.APP_DIR)
@@ -247,6 +248,7 @@ def configure_server(root: Path):
     auto_tag_support.install(server, smart_mode)
     siglip_support.install(server, auto_tag_support)
     ai_center_support.install(server, auto_tag_support, siglip_support)
+    ai_tag_sync_support.install(server, auto_tag_support, ai_center_support)
     browser_privacy.install(server)
     cleanup_compat_cache(root)
     return server
@@ -301,7 +303,7 @@ def self_test() -> int:
             "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
             "move_branding.js", "v23_features.js", "v23_features.css", "v23_player_fix.js", "v23_player_fix.css",
             "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",
-            "ai_center.js", "ai_center.css", "ai_first_run.js", "ai_first_run.css",
+            "ai_center.js", "ai_center.css", "ai_first_run.js", "ai_first_run.css", "ai_tag_live_sync.js",
         ):
             if not (app_dir / name).exists():
                 return 20

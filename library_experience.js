@@ -293,6 +293,11 @@
     tagCacheAt = 0;
   }, true);
 
+  window.addEventListener('localhub:ai-tags-updated', () => {
+    tagCache = null;
+    tagCacheAt = 0;
+  });
+
   function ensureNotice() {
     let notice = document.querySelector('#newMediaNotice');
     if (notice) return notice;

@@ -9,6 +9,7 @@
   };
 
   const PAGE_SIZE = 30;
+  const HOME_PAGE_SIZE = 15;
   const HOVER_SLOTS = 6;
   const UNSAFE_NATIVE_EXTS = new Set(['avi', 'mpg', 'mpeg', 'ts', 'mkv', 'ogv']);
 
@@ -16,7 +17,7 @@
     route: 'home', folder: '', query: '', offset: 0, total: 0, hasMore: false,
     items: [], folders: [], stats: {}, current: null, currentProbe: null,
     pack: null, packIndex: 0, tagTarget: null, requestToken: 0, clientIds: [], clientKind: '',
-    playbackMode: 'native', compatJob: null, compatPoll: null, restoreTime: 0,
+    playbackMode: 'native', compatJob: null, compatPoll: null, restoreTime: 0, homeSeed: '',
     favorites: new Set(readJSON('localhub:favorites', [])),
     progress: readJSON('localhub:progress', {})
   };
@@ -197,9 +198,10 @@
   const cardHtml = i => i.kind === 'folder' ? folderCard(i) : i.kind === 'pack' ? packCard(i) : mediaCard(i);
 
   function updatePager() {
-    const paged = state.route !== 'home' && state.total > PAGE_SIZE;
+    const pageSize = state.route === 'home' ? HOME_PAGE_SIZE : PAGE_SIZE;
+    const paged = state.total > pageSize;
     el.pager.classList.toggle('hidden', !paged); if (!paged) return;
-    const page = Math.floor(state.offset / PAGE_SIZE) + 1, pages = Math.max(1, Math.ceil(state.total / PAGE_SIZE));
+    const page = Math.floor(state.offset / pageSize) + 1, pages = Math.max(1, Math.ceil(state.total / pageSize));
     el.pageInfo.textContent = `第 ${page} / ${pages} 页`; el.prevPage.disabled = state.offset <= 0; el.nextPage.disabled = !state.hasMore;
   }
 
@@ -251,12 +253,13 @@
   }
   const scrollTopFast = () => window.scrollTo({top:0,left:0,behavior:'instant'});
 
-  async function loadHome() {
-    const token = ++state.requestToken; state.route='home'; state.folder=''; state.query=''; state.offset=0; state.total=0; state.hasMore=false; state.clientIds=[];
-    navActive('home'); el.title.textContent='首页'; el.meta.textContent='正在读取轻量索引…'; el.hint.textContent='最多 15 个视频';
-    const d = await api('/api/smart/home'); if (token !== state.requestToken) return;
-    state.items=d.items||[]; state.folders=d.folders||[]; state.stats=d.stats||{}; state.total=state.items.length;
-    renderFolders(); renderFull(); el.meta.textContent=`${state.stats.videos||0} 个视频 · ${state.stats.images||0} 张图片 · 首页只展示 ${state.items.length} 个视频`;
+  async function loadHome({offset=0, keepSeed=false}={}) {
+    const token = ++state.requestToken; state.route='home'; state.folder=''; state.query=''; state.offset=Math.max(0,offset); state.clientIds=[];
+    if (!keepSeed || !state.homeSeed) state.homeSeed = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    navActive('home'); el.title.textContent='首页'; el.meta.textContent='正在读取轻量索引…'; el.hint.textContent='';
+    const d = await api(`/api/smart/home?offset=${state.offset}&limit=${HOME_PAGE_SIZE}&seed=${encodeURIComponent(state.homeSeed)}`); if (token !== state.requestToken) return;
+    state.items=d.items||[]; state.folders=d.folders||[]; state.stats=d.stats||{}; state.total=Number(d.total)||0; state.hasMore=!!d.hasMore;
+    renderFolders(); renderFull(); el.meta.textContent=`${state.stats.videos||0} 个视频 · ${state.stats.images||0} 张图片`;
   }
 
   async function loadList(view, {offset=0}={}) {
@@ -279,7 +282,7 @@
     if(!state.total){state.items=[];renderFull();return;}
     const ids=state.clientIds.slice(state.offset,state.offset+PAGE_SIZE);const d=await api(`/api/smart/by-ids?ids=${encodeURIComponent(ids.join('\n'))}`);state.items=d.items||[];renderFull();scrollTopFast();
   }
-  function changePage(delta){const next=Math.max(0,state.offset+delta*PAGE_SIZE);if(next===state.offset)return;if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));}
+  function changePage(delta){const pageSize=state.route==='home'?HOME_PAGE_SIZE:PAGE_SIZE;const next=Math.max(0,state.offset+delta*pageSize);if(next===state.offset)return;if(state.route==='home')loadHome({offset:next,keepSeed:true}).catch(e=>toast(e.message));else if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));}
 
   function toggleFavorite(id){state.favorites.has(id)?state.favorites.delete(id):state.favorites.add(id);state.clientIds=[];saveFav();if(state.current?.id===id)updateViewerFav();}
   function updateViewerFav(){el.favorite.textContent=state.current&&state.favorites.has(state.current.id)?'★ 已收藏':'☆ 收藏';}

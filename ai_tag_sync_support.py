@@ -310,6 +310,8 @@ class AITagReconciler:
 
 
 def install(server_module, auto_tag_support_module, ai_center_support_module) -> None:
+    app_dir = Path(server_module.APP_DIR)
+    server_module.STATIC_FILES["/ai_tag_live_sync.js"] = app_dir / "ai_tag_live_sync.js"
     Manager = auto_tag_support_module.AutoTagManager
     MediaStore = server_module.MediaStore
     if getattr(Manager, "_localhub_managed_ai_tags", False):

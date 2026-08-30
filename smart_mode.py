@@ -277,40 +277,51 @@ class Catalog:
             ordered.extend(leftovers[: max(0, limit - len(ordered))])
         return ordered[:limit]
 
-    def home(self) -> list[dict]:
+    def home(self, offset: int = 0, limit: int = HOME_MAX, seed: str = "") -> dict:
+        """Return one stable random home sequence without repeats.
+
+        Page one prioritizes videos directly beside LocalHub.exe. If there are
+        at least 15 root videos, 15 are sampled from that root pool. If there
+        are fewer, all root videos are kept and random videos from subfolders
+        fill the first page. Remaining pages shuffle every still-unseen video,
+        so a browsing round never repeats an item before the library is exhausted.
+        """
         self._await()
+        limit = max(1, min(HOME_MAX, int(limit or HOME_MAX)))
+        offset = max(0, int(offset or 0))
         with self.lock:
             root_videos = [item for item in self.direct_by_folder.get("", []) if item["type"] == "video"]
             all_videos = [item for item in self.items if item["type"] == "video"]
-            by_folder = defaultdict(list)
-            for item in all_videos:
-                if item.get("folder"):
-                    by_folder[item["folder"]].append(item)
 
-        root_videos.sort(key=lambda item: item.get("modified", 0), reverse=True)
-        selected = root_videos[:HOME_MAX]
-        selected_ids = {item["id"] for item in selected}
-        if len(selected) < HOME_MIN:
-            day = int(time.time() // 86400)
-            seed_text = f"{self.store.root}|{day}"
-            seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
-            rng = random.Random(seed)
-            folders = list(by_folder)
-            rng.shuffle(folders)
-            for folder in folders:
-                choices = [x for x in by_folder[folder] if x["id"] not in selected_ids]
-                if not choices:
-                    continue
-                item = rng.choice(choices)
-                selected.append(item)
-                selected_ids.add(item["id"])
-                if len(selected) >= HOME_MIN:
-                    break
-            if len(selected) < HOME_MAX:
-                rest = [item for item in all_videos if item["id"] not in selected_ids]
-                rng.shuffle(rest)
-                selected.extend(rest[: HOME_MAX - len(selected)])
-        return [_media_public(item) for item in selected[:HOME_MAX]]
+        root_videos = sorted(root_videos, key=lambda item: item["id"].casefold())
+        all_videos = sorted(all_videos, key=lambda item: item["id"].casefold())
+        seed_text = f"{self.store.root}|{str(seed)[:128] or int(time.time() // 86400)}"
+        seed_value = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
+        rng = random.Random(seed_value)
+
+        root_pool = list(root_videos)
+        rng.shuffle(root_pool)
+        if len(root_pool) >= HOME_MAX:
+            first = root_pool[:HOME_MAX]
+        else:
+            first = list(root_pool)
+            root_ids = {item["id"] for item in first}
+            others = [item for item in all_videos if item["id"] not in root_ids]
+            rng.shuffle(others)
+            first.extend(others[: max(0, HOME_MAX - len(first))])
+
+        first_ids = {item["id"] for item in first}
+        remaining = [item for item in all_videos if item["id"] not in first_ids]
+        rng.shuffle(remaining)
+        ordered = first + remaining
+        page = ordered[offset: offset + limit]
+        return {
+            "items": [_media_public(item) for item in page],
+            "total": len(ordered),
+            "offset": offset,
+            "limit": limit,
+            "hasMore": offset + limit < len(ordered),
+        }
 
     def _folder_payload(self, folder: str) -> list[dict]:
         with self.lock:
@@ -421,6 +432,7 @@ def install(server_module) -> None:
     def make_handler(store):
         BaseHandler = original_make_handler(store)
         catalog = Catalog(store)
+        store._smart_catalog = catalog
 
         class SmartHandler(BaseHandler):
             server_version = "LocalHub/2.0"
@@ -450,7 +462,15 @@ def install(server_module) -> None:
                 if path == "/smart_ui.css":
                     return self._smart_static(smart_css, "text/css; charset=utf-8")
                 if path == "/api/smart/home":
-                    return self._send_json({"items": catalog.home(), "folders": catalog.folders(), "stats": catalog.stats()})
+                    try:
+                        offset = int(query.get("offset", ["0"])[0] or 0)
+                        limit = int(query.get("limit", [str(HOME_MAX)])[0] or HOME_MAX)
+                    except ValueError:
+                        offset, limit = 0, HOME_MAX
+                    payload = catalog.home(offset=offset, limit=limit, seed=query.get("seed", [""])[0])
+                    payload["folders"] = catalog.folders()
+                    payload["stats"] = catalog.stats()
+                    return self._send_json(payload)
                 if path == "/api/smart/list":
                     try:
                         offset = int(query.get("offset", ["0"])[0] or 0)

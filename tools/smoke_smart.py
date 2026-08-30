@@ -105,6 +105,19 @@ def main() -> None:
         assert all(item["id"] != "manual-only.mp4" for item in manual_view["items"])
         assert catalog.stats()["videos"] == 21
 
+        # Home browsing is a stable random sequence: 15 per page, no repeats
+        # until every video has appeared. Reusing the same seed makes Back/Next
+        # deterministic instead of reshuffling the page under the user.
+        home_round_one = catalog.home(offset=0, limit=15, seed="smoke-home")
+        home_round_two = catalog.home(offset=15, limit=15, seed="smoke-home")
+        assert len(home_round_one["items"]) == 15
+        first_ids = [row["id"] for row in home_round_one["items"]]
+        second_ids = [row["id"] for row in home_round_two["items"]]
+        assert not (set(first_ids) & set(second_ids)), (first_ids, second_ids)
+        assert len(first_ids + second_ids) == len(set(first_ids + second_ids))
+        repeat_first = catalog.home(offset=0, limit=15, seed="smoke-home")
+        assert [row["id"] for row in repeat_first["items"]] == first_ids
+
         # Re-polling does not duplicate the same discovery.
         catalog.last_change_check = 0.0
         new_again = catalog.list_view("new", limit=30)
