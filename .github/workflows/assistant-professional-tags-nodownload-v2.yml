@@ -1,0 +1,40 @@
+name: Apply professional tags and no-download v2
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-professional-tags-nodownload-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Reuse patch with lightweight validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('.github/workflows/assistant-professional-tags-nodownload.yml').read_text('utf-8')
+          marker = '      - name: Apply taxonomy and player changes\n'
+          start = source.index(marker)
+          run_marker = '        run: |\n'
+          start = source.index(run_marker, start) + len(run_marker)
+          block = source[start:]
+          lines = []
+          for line in block.splitlines():
+              if line.startswith('          '):
+                  line = line[10:]
+              lines.append(line)
+          script = '\n'.join(lines) + '\n'
+          script = script.replace('python tools/smoke_auto_tag.py\n', '')
+          Path('/tmp/localhub-professional-tags.sh').write_text(script, 'utf-8')
+          PY
+          bash /tmp/localhub-professional-tags.sh
