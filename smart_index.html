@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#0b0b0c">
   <title>LocalHub · 本地媒体库</title>
   <link rel="stylesheet" href="/smart_ui.css">
+  <link rel="stylesheet" href="/library_experience.css">
   <link rel="stylesheet" href="/ux_enhancements.css">
   <link rel="stylesheet" href="/v23_features.css">
   <link rel="stylesheet" href="/v23_player_fix.css">
@@ -25,19 +26,18 @@
       <nav class="main-nav">
         <button data-route="home" class="active"><span>⌂</span>首页</button>
         <button data-route="videos"><span>▶</span>全部视频</button>
+        <button data-route="new" id="newVideoNav" class="hidden"><span>✦</span>新视频<small id="newVideoCount" class="nav-count">0</small></button>
         <button data-route="packs"><span>▦</span>图包 / 图册</button>
-        <button data-route="root"><span>◫</span>根目录</button>
         <button data-route="favorite"><span>★</span>收藏</button>
         <button data-route="continue"><span>↺</span>继续观看</button>
       </nav>
       <div class="side-title">文件夹</div>
       <div id="folderNav" class="folder-nav"><div class="side-loading">正在建立索引…</div></div>
-      <div class="side-foot">轻量索引 · 按需预览 · 本机运行</div>
     </aside>
 
     <main class="content">
       <section class="heading">
-        <div><h1 id="pageTitle">首页</h1><p id="pageMeta">只展示少量内容，完整媒体库通过左侧分类进入。</p></div>
+        <div><h1 id="pageTitle">首页</h1><p id="pageMeta"></p></div>
         <div id="viewHint" class="view-hint"></div>
       </section>
       <section id="grid" class="grid"></section>
@@ -116,6 +116,7 @@
 
   <div id="toast" class="toast"></div>
   <script src="/smart_ui.js"></script>
+  <script src="/library_experience.js"></script>
   <script>
     // 2.3.2 observer guard. The UX layer only needs to notice replacement of
     // media cards and viewer tags; observing every time label mutation causes
