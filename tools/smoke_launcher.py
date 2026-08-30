@@ -1,4 +1,5 @@
 import json
+import socket
 import sys
 import threading
 from pathlib import Path
@@ -9,6 +10,37 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import launcher
+import network_privacy
+
+
+# Privacy contract: importing the real launcher must install a process-level
+# loopback-only network guard. External DNS/socket destinations are rejected
+# before any network operation is attempted; localhost remains exercised by the
+# real HTTP-server tests later in this file.
+assert network_privacy.installed(), "loopback-only privacy guard is not installed"
+for external_host in ("example.com", "8.8.8.8"):
+    try:
+        socket.getaddrinfo(external_host, 443)
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError(f"external DNS was not blocked: {external_host}")
+
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.connect(("1.1.1.1", 443))
+except PermissionError:
+    pass
+else:
+    raise AssertionError("external TCP connection was not blocked")
+
+# Distribution contract: the AI weights stay in the separate
+# LocalHub-AI-Model folder and must never be embedded into the one-file EXE.
+spec_text = (REPO_ROOT / "LocalHub.spec").read_text("utf-8")
+assert "LocalHub-AI-Model" not in spec_text, "AI model folder was accidentally embedded into LocalHub.exe"
+first_run_js = (REPO_ROOT / "ai_first_run.js").read_text("utf-8")
+assert "开始 AI 功能" in first_run_js and "aiFirstProgressBar" in first_run_js
+assert "完全离线，不连接互联网" in first_run_js
 
 
 class EmptyCompat:
@@ -104,8 +136,8 @@ with TemporaryDirectory() as tmp:
 
 
 # The real launcher composition must include the dedicated AI Center, its
-# persistent Tag-group settings API, and the default balanced background mode.
-# This catches wiring errors before PyInstaller runs.
+# first-run onboarding, persistent Tag-group settings API, and the default
+# balanced background mode. This catches wiring errors before PyInstaller runs.
 with TemporaryDirectory() as tmp:
     root = Path(tmp)
     httpd, port = launcher.create_http_server(root)
@@ -117,6 +149,7 @@ with TemporaryDirectory() as tmp:
         with launcher.local_urlopen(base + "/", timeout=5.0) as response:
             html = response.read().decode("utf-8")
         assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"
+        assert "/ai_first_run.js" in html and "/ai_first_run.css" in html, "AI first-run assets are not injected"
         assert 'id="tagCategoryNav"' in html and "Tag / 分类" in html, "Tag/category sidebar entry is missing"
         assert '<button data-route="packs"><span>▦</span>图包 / 图册</button>' not in html, "legacy image-pack sidebar entry returned"
 
@@ -124,6 +157,8 @@ with TemporaryDirectory() as tmp:
             overview = json.loads(response.read().decode("utf-8"))
         assert overview.get("ok") is True, "AI overview endpoint is unavailable"
         assert overview["settings"]["backgroundMode"] == "balanced"
+        assert overview["settings"]["onboardingCompleted"] is False
+        assert overview["settings"]["aiOptIn"] is False
         group_names = [group.get("name") for group in overview["settings"].get("groups", [])]
         for expected in ("全部视频", "生活", "学习", "风景", "娱乐", "色情"):
             assert expected in group_names, f"missing default AI Tag group: {expected}"
@@ -138,4 +173,4 @@ with TemporaryDirectory() as tmp:
         httpd.server_close()
 
 
-print("launcher startup cleanup, lifecycle, AI-center, Tag-navigation, and balanced-playback smoke test passed")
+print("launcher lifecycle, privacy, offline onboarding, Tag navigation, and balanced AI smoke test passed")
