@@ -240,8 +240,42 @@ class Catalog:
         self._await()
         with self.lock:
             rows = [dict(row) for row in self.folder_stats.values()]
-        rows.sort(key=lambda r: (r["path"].count("/"), -r["videos"], -r["images"], r["path"].casefold()))
-        return rows[:limit]
+
+        # Sidebar folders must be emitted in real tree preorder. Sorting every
+        # depth globally makes a child such as Videos/上课 appear after an
+        # unrelated root folder (for example 亚洲), which visually attaches the
+        # child to the wrong parent. Keep each child directly under its true
+        # parent path instead.
+        by_parent: dict[str, list[dict]] = defaultdict(list)
+        known_paths = {row["path"] for row in rows}
+        for row in rows:
+            path = row["path"]
+            parent = path.rsplit("/", 1)[0] if "/" in path else ""
+            if parent and parent not in known_paths:
+                parent = ""
+            by_parent[parent].append(row)
+
+        for siblings in by_parent.values():
+            siblings.sort(key=lambda r: (-r["videos"], -r["images"], r["name"].casefold(), r["path"].casefold()))
+
+        ordered: list[dict] = []
+        seen: set[str] = set()
+
+        def visit(parent: str) -> None:
+            for row in by_parent.get(parent, []):
+                path = row["path"]
+                if path in seen or len(ordered) >= limit:
+                    continue
+                seen.add(path)
+                ordered.append(row)
+                visit(path)
+
+        visit("")
+        if len(ordered) < min(limit, len(rows)):
+            leftovers = [row for row in rows if row["path"] not in seen]
+            leftovers.sort(key=lambda r: (r["path"].casefold(),))
+            ordered.extend(leftovers[: max(0, limit - len(ordered))])
+        return ordered[:limit]
 
     def home(self) -> list[dict]:
         self._await()

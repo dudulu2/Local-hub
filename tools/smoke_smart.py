@@ -82,6 +82,19 @@ def main() -> None:
         assert catalog.stats()["videos"] == 18
         assert any(row["path"] == "incoming" for row in catalog.folders())
 
+        # Folder navigation is a tree, not a list grouped globally by depth.
+        # A child must be emitted immediately after its real parent before the
+        # next unrelated root folder, otherwise the sidebar visually nests it
+        # under the wrong root.
+        touch(root / "Videos" / "上课" / "lesson.mp4", 1500)
+        touch(root / "亚洲" / "asia.mp4", 1500)
+        catalog.refresh(wait=True, track_new=False)
+        folder_paths = [row["path"] for row in catalog.folders()]
+        videos_index = folder_paths.index("Videos")
+        lesson_index = folder_paths.index("Videos/上课")
+        asia_index = folder_paths.index("亚洲")
+        assert videos_index < lesson_index < asia_index, folder_paths
+
         # A manual refresh is also used after LocalHub rename/move operations.
         # Path changes from those workflows must not look like newly copied media.
         touch(root / "manual-only.mp4", 1900)
