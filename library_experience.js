@@ -8,13 +8,30 @@
   const hint = document.querySelector('#viewHint');
   const viewer = document.querySelector('#viewer');
   const brand = document.querySelector('#brandBtn');
+  const grid = document.querySelector('#grid');
+  const empty = document.querySelector('#empty');
+  const pager = document.querySelector('#pager');
+  const pageTitle = document.querySelector('#pageTitle');
+  const search = document.querySelector('#searchInput');
+  const rescan = document.querySelector('#rescanBtn');
+  const tagNav = document.querySelector('.main-nav button[data-route="packs"]');
   if (!folderNav) return;
+
+  if (tagNav) {
+    tagNav.dataset.route = 'tags';
+    tagNav.id = 'tagCategoryNav';
+    tagNav.innerHTML = '<span>#</span>标签分类';
+  }
 
   const expanded = new Set();
   let hoverTimer = null;
   let lastNewTotal = 0;
   let pollTimer = null;
   let refreshingHome = false;
+  let tagCache = null;
+  let tagCacheAt = 0;
+  let tagViewActive = false;
+  let tagRenderToken = 0;
 
   function parentPath(path) {
     const clean = String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
@@ -114,9 +131,6 @@
       return;
     }
 
-    // Clicking a folder still opens it through smart_ui.js, but the first click
-    // also reveals its direct children. Expanded folders stay open until the
-    // caret is explicitly collapsed.
     if (!expanded.has(path)) {
       expanded.add(path);
       applyFolderTree();
@@ -161,14 +175,123 @@
     cleaned = cleaned.replace(/\s*·\s*当前页只加载\s*\d+\s*项.*$/u, '');
     cleaned = cleaned.replace(/\s*·\s*当前页最多\s*\d+\s*项.*$/u, '');
     cleaned = cleaned.trim();
-    // MutationObserver callbacks must be read-mostly. Writing textContent even
-    // when the value is already identical creates a fresh childList mutation and
-    // can form an endless microtask loop in real Chromium/Edge.
     if (cleaned !== original) meta.textContent = cleaned;
   }
 
   if (meta) new MutationObserver(cleanMeta).observe(meta, {childList:true, subtree:true, characterData:true});
   cleanMeta();
+
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+
+  function leaveTagView() {
+    if (!tagViewActive) return;
+    tagViewActive = false;
+    tagRenderToken++;
+    grid?.classList.remove('tag-category-grid');
+  }
+
+  async function loadTagSummary(force = false) {
+    const now = Date.now();
+    if (!force && tagCache && now - tagCacheAt < 30000) return tagCache;
+
+    const counts = new Map();
+    let offset = 0;
+    const limit = 60;
+    let pages = 0;
+    while (pages < 200) {
+      const response = await fetch(`/api/smart/list?view=videos&offset=${offset}&limit=${limit}`, {cache:'no-store'});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      for (const item of data.items || []) {
+        for (const raw of item.tags || []) {
+          const name = String(raw || '').trim();
+          if (!name) continue;
+          const key = name.toLocaleLowerCase();
+          const row = counts.get(key) || {name, count:0};
+          row.count += 1;
+          counts.set(key, row);
+        }
+      }
+      pages += 1;
+      if (!data.hasMore || !(data.items || []).length) break;
+      offset += limit;
+    }
+
+    tagCache = [...counts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
+    tagCacheAt = Date.now();
+    return tagCache;
+  }
+
+  function activateTagNav() {
+    document.querySelectorAll('.main-nav button').forEach(button => button.classList.remove('active'));
+    tagNav?.classList.add('active');
+  }
+
+  async function renderTagOverview() {
+    if (!tagNav || !grid) return;
+    const token = ++tagRenderToken;
+    tagViewActive = true;
+    activateTagNav();
+    grid.classList.add('tag-category-grid');
+    grid.innerHTML = '<div class="tag-category-loading">正在整理标签…</div>';
+    if (pager) pager.classList.add('hidden');
+    if (empty) empty.classList.add('hidden');
+    if (pageTitle) pageTitle.textContent = '标签分类';
+    if (meta) meta.textContent = '';
+    if (hint) hint.textContent = '';
+
+    try {
+      const tags = await loadTagSummary();
+      if (!tagViewActive || token !== tagRenderToken) return;
+      if (!tags.length) {
+        grid.innerHTML = '<div class="tag-category-empty"><strong>还没有标签</strong><span>给视频添加 Tag，或接受 AI Tag 后会自动出现在这里。</span></div>';
+        if (meta) meta.textContent = '';
+        return;
+      }
+      grid.innerHTML = tags.map(tag => `<button type="button" class="tag-category-card" data-category-tag="${escapeHtml(tag.name)}"><span class="tag-category-name"># ${escapeHtml(tag.name)}</span><small>${tag.count} 个视频</small></button>`).join('');
+      if (meta) meta.textContent = `共 ${tags.length} 个标签`;
+    } catch {
+      if (!tagViewActive || token !== tagRenderToken) return;
+      grid.innerHTML = '<div class="tag-category-empty"><strong>标签读取失败</strong><span>稍后再试，不影响视频浏览。</span></div>';
+    }
+  }
+
+  document.addEventListener('click', event => {
+    const nav = event.target.closest?.('#tagCategoryNav');
+    if (nav) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      renderTagOverview();
+      return;
+    }
+
+    const category = event.target.closest?.('[data-category-tag]');
+    if (category && grid?.contains(category)) {
+      event.preventDefault();
+      const tag = category.dataset.categoryTag || '';
+      leaveTagView();
+      if (search) {
+        search.value = tag;
+        search.dispatchEvent(new Event('input', {bubbles:true}));
+        setTimeout(() => tagNav?.classList.add('active'), 320);
+      }
+      return;
+    }
+
+    const mainButton = event.target.closest?.('.main-nav button');
+    if (mainButton && mainButton !== tagNav) leaveTagView();
+  }, true);
+
+  search?.addEventListener('input', () => {
+    if (tagViewActive) leaveTagView();
+  }, true);
+
+  rescan?.addEventListener('click', () => {
+    tagCache = null;
+    tagCacheAt = 0;
+  }, true);
 
   function ensureNotice() {
     let notice = document.querySelector('#newMediaNotice');
@@ -215,16 +338,16 @@
       const total = Math.max(0, Number(data.total) || 0);
       const delta = Math.max(0, total - lastNewTotal);
       updateNewNav(total);
-      if (delta > 0) announceNew(delta, total);
+      if (delta > 0) {
+        tagCache = null;
+        tagCacheAt = 0;
+        announceNew(delta, total);
+      }
       lastNewTotal = total;
 
       if (data.catalogChanged && newNav?.classList.contains('active')) {
-        // Keep the dedicated feed live without forcing navigation elsewhere.
         newNav.click();
       } else if (data.catalogChanged && document.querySelector('.main-nav button[data-route="home"]')?.classList.contains('active') && !refreshingHome) {
-        // A changed catalog may contain a brand-new top-level folder. Refresh the
-        // home snapshot only when the user is already on Home; never pull them out
-        // of a folder/search/player just to update the sidebar.
         refreshingHome = true;
         setTimeout(() => {
           try { brand?.click(); }
