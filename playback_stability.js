@@ -6,6 +6,7 @@
   const viewer = $('#viewer');
   const stage = $('#viewerStage');
   const pathNode = $('#viewerPath');
+  const diagnostics = $('#mediaDiagnostics');
   const compatBtn = $('#compatBtn');
   const notice = $('#playerNotice');
   const noticeTitle = $('#playerNoticeTitle');
@@ -23,15 +24,39 @@
   let stalls = [];
   let unstableNotifiedAt = 0;
 
-  // Chromium's intrinsic videoWidth/videoHeight can describe the coded frame
-  // instead of the rotated/display frame for some phone MP4/MOV files. Keep a
-  // separate display geometry, preferably from LocalHub's FFmpeg probe, and fit
-  // the element box explicitly so a 9:16 clip can never be cropped by a 16:9
-  // player shell.
-  let displayWidth = 0;
-  let displayHeight = 0;
-  let displaySource = '';
-  let orientationRequest = 0;
+  // Opening a video is interactive work too. Previously the backend only learned
+  // that playback had priority after Chromium emitted "play". That leaves a
+  // startup window where thumbnail/hover FFmpeg jobs can still compete with
+  // metadata and first-frame reads. Mark that short window as interactive, then
+  // release it as soon as metadata/data/error arrives. No transcoding is started.
+  let startupPriorityTimer = null;
+
+  async function postActivity(payload) {
+    try {
+      await fetch('/api/io/activity', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
+        cache: 'no-store',
+        keepalive: true,
+      });
+    } catch {}
+  }
+
+  function releaseStartupPriority() {
+    clearTimeout(startupPriorityTimer);
+    startupPriorityTimer = null;
+    postActivity({seeking:false});
+  }
+
+  function boostStartupPriority() {
+    clearTimeout(startupPriorityTimer);
+    // Re-use the scheduler's short interactive/seeking lane rather than the
+    // 30-second "playing" lease. If a file never loads, this cannot starve
+    // background work indefinitely.
+    postActivity({seeking:true});
+    startupPriorityTimer = setTimeout(releaseStartupPriority, 6500);
+  }
 
   function showPassiveNotice(title, text) {
     if (!notice) return;
@@ -58,86 +83,92 @@
     showPassiveNotice('浏览器播放时间轴不稳定', `${reason}。建议使用“兼容播放”或系统播放器，LocalHub 不会自动启动后台转码。`);
   }
 
+  // ----- portrait / rotation-safe fitting ---------------------------------
+  // Some phone files expose different coded/intrinsic and display dimensions.
+  // smart_ui already performs the single authoritative FFmpeg probe. To avoid a
+  // second probe chain here, we only consume dimensions that smart_ui renders in
+  // #mediaDiagnostics, plus Chromium's intrinsic dimensions as a fallback.
+  let diagnosticGeometry = null;
+  let intrinsicGeometry = null;
+  let displayGeometry = null;
+
+  function geometry(width, height, source) {
+    width = Number(width) || 0;
+    height = Number(height) || 0;
+    if (!width || !height) return null;
+    return {width, height, source, portrait: height > width * 1.08};
+  }
+
   function clearVideoBox() {
     for (const property of ['width', 'height', 'max-width', 'max-height', 'aspect-ratio']) {
       video.style.removeProperty(property);
     }
   }
 
+  function chooseGeometry() {
+    const a = diagnosticGeometry;
+    const b = intrinsicGeometry;
+    if (a && b && a.portrait !== b.portrait) {
+      // A rotation disagreement is exactly the case that used to crop phone
+      // videos. Favor the portrait interpretation; "contain" then letterboxes
+      // safely instead of cutting picture content off.
+      return a.portrait ? a : b;
+    }
+    return a || b || null;
+  }
+
   function fitVideoBox() {
-    const width = Number(displayWidth) || 0;
-    const height = Number(displayHeight) || 0;
+    const chosen = chooseGeometry();
+    if (!viewer.open || !chosen) return;
+    displayGeometry = chosen;
+
     const stageWidth = stage.clientWidth || 0;
     const stageHeight = stage.clientHeight || 0;
-    if (!viewer.open || !width || !height || !stageWidth || !stageHeight) return;
+    if (!stageWidth || !stageHeight) return;
 
-    const scale = Math.min(stageWidth / width, stageHeight / height);
+    const scale = Math.min(stageWidth / chosen.width, stageHeight / chosen.height);
     if (!Number.isFinite(scale) || scale <= 0) return;
-    const fittedWidth = Math.max(1, Math.floor(width * scale));
-    const fittedHeight = Math.max(1, Math.floor(height * scale));
+    const fittedWidth = Math.max(1, Math.floor(chosen.width * scale));
+    const fittedHeight = Math.max(1, Math.floor(chosen.height * scale));
 
-    // Explicit pixel geometry avoids relying on a replaced element's coded
-    // intrinsic ratio when rotation metadata says the display ratio is different.
+    viewer.classList.toggle('lh-player-portrait', chosen.portrait);
+    viewer.classList.toggle('lh-player-landscape', !chosen.portrait);
+    stage.classList.toggle('lh-stage-portrait', chosen.portrait);
+    stage.style.setProperty('--lh-media-aspect', `${chosen.width}/${chosen.height}`);
+
     video.style.setProperty('width', `${fittedWidth}px`, 'important');
     video.style.setProperty('height', `${fittedHeight}px`, 'important');
     video.style.setProperty('max-width', '100%', 'important');
     video.style.setProperty('max-height', '100%', 'important');
-    video.style.setProperty('aspect-ratio', `${width} / ${height}`, 'important');
+    video.style.setProperty('aspect-ratio', `${chosen.width} / ${chosen.height}`, 'important');
     video.style.setProperty('object-fit', 'contain', 'important');
     video.style.setProperty('object-position', 'center center', 'important');
-  }
 
-  function applyOrientation(width, height, source = 'intrinsic') {
-    width = Number(width) || 0;
-    height = Number(height) || 0;
-    if (!width || !height) return;
-
-    // A successful FFmpeg display-size probe is authoritative. Do not let a
-    // later Chromium intrinsic resize event overwrite a rotated portrait ratio.
-    if (displaySource === 'probe' && source !== 'probe') {
-      fitVideoBox();
-      return;
-    }
-
-    displayWidth = width;
-    displayHeight = height;
-    displaySource = source;
-    const portrait = height > width * 1.08;
-    viewer.classList.toggle('lh-player-portrait', portrait);
-    viewer.classList.toggle('lh-player-landscape', !portrait);
-    stage.classList.toggle('lh-stage-portrait', portrait);
-    stage.style.setProperty('--lh-media-aspect', `${width}/${height}`);
-
-    // The class changes the dialog/player-shell dimensions, so fit after layout
-    // has settled as well as once immediately.
-    fitVideoBox();
+    // Class changes can resize the player shell; settle once more after layout.
     requestAnimationFrame(() => {
-      fitVideoBox();
-      requestAnimationFrame(fitVideoBox);
+      const current = chooseGeometry();
+      if (!viewer.open || !current) return;
+      const sw = stage.clientWidth || 0;
+      const sh = stage.clientHeight || 0;
+      if (!sw || !sh) return;
+      const nextScale = Math.min(sw / current.width, sh / current.height);
+      if (!Number.isFinite(nextScale) || nextScale <= 0) return;
+      video.style.setProperty('width', `${Math.max(1, Math.floor(current.width * nextScale))}px`, 'important');
+      video.style.setProperty('height', `${Math.max(1, Math.floor(current.height * nextScale))}px`, 'important');
     });
   }
 
-  function fitIntrinsic() {
-    if (video.videoWidth && video.videoHeight) {
-      applyOrientation(video.videoWidth, video.videoHeight, 'intrinsic');
-    }
+  function readDiagnosticGeometry() {
+    const text = (diagnostics?.textContent || '').trim();
+    const match = text.match(/(\d{2,5})\s*[×x]\s*(\d{2,5})/i);
+    diagnosticGeometry = match ? geometry(match[1], match[2], 'diagnostics') : null;
+    fitVideoBox();
   }
 
-  async function fitFromProbe(path) {
-    const clean = String(path || '').trim();
-    if (!clean) return;
-    const request = ++orientationRequest;
-    try {
-      const response = await fetch(`/api/media/probe?path=${encodeURIComponent(clean)}`, {cache:'no-store'});
-      if (!response.ok) return;
-      const data = await response.json();
-      if (request !== orientationRequest || !viewer.open || pathNode.textContent.trim() !== clean) return;
-      const probe = data?.probe || {};
-      const width = Number(probe.displayWidth || probe.width) || 0;
-      const height = Number(probe.displayHeight || probe.height) || 0;
-      if (width && height) applyOrientation(width, height, 'probe');
-    } catch {
-      // Orientation is best-effort; intrinsic dimensions remain the fallback.
+  function readIntrinsicGeometry() {
+    if (video.videoWidth && video.videoHeight) {
+      intrinsicGeometry = geometry(video.videoWidth, video.videoHeight, 'intrinsic');
+      fitVideoBox();
     }
   }
 
@@ -158,33 +189,48 @@
     else stage.requestFullscreen?.();
   });
 
+  video.addEventListener('loadstart', () => {
+    if (viewer.open) boostStartupPriority();
+  });
+
   video.addEventListener('loadedmetadata', () => {
-    fitIntrinsic();
-    const path = pathNode.textContent.trim();
-    if (path) fitFromProbe(path);
-    requestAnimationFrame(fitIntrinsic);
+    releaseStartupPriority();
+    readIntrinsicGeometry();
+    readDiagnosticGeometry();
     resetWatchdog();
   });
   video.addEventListener('loadeddata', () => {
-    fitIntrinsic();
+    releaseStartupPriority();
+    readIntrinsicGeometry();
     fitVideoBox();
   });
+  video.addEventListener('canplay', releaseStartupPriority);
   video.addEventListener('resize', () => {
-    fitIntrinsic();
+    readIntrinsicGeometry();
     fitVideoBox();
   });
+  video.addEventListener('error', releaseStartupPriority);
+  video.addEventListener('abort', releaseStartupPriority);
   video.addEventListener('seeking', () => { lastSeekAt = performance.now(); });
   video.addEventListener('seeked', resetWatchdog);
   video.addEventListener('emptied', resetWatchdog);
 
+  // A path change means the user has selected a different video. Give that
+  // startup read priority before Chromium manages to emit "play".
   new MutationObserver(() => {
-    displayWidth = 0;
-    displayHeight = 0;
-    displaySource = '';
+    diagnosticGeometry = null;
+    intrinsicGeometry = null;
+    displayGeometry = null;
     clearVideoBox();
-    const path = pathNode.textContent.trim();
-    if (path && viewer.open) fitFromProbe(path);
+    if (viewer.open && (pathNode.textContent || '').trim()) boostStartupPriority();
   }).observe(pathNode, {subtree:true, childList:true, characterData:true});
+
+  if (diagnostics) {
+    new MutationObserver(readDiagnosticGeometry).observe(
+      diagnostics,
+      {subtree:true, childList:true, characterData:true}
+    );
+  }
 
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(() => fitVideoBox()).observe(stage);
@@ -250,10 +296,11 @@
 
   viewer.addEventListener('close', () => {
     const path = (pathNode.textContent || '').trim();
-    orientationRequest++;
-    displayWidth = 0;
-    displayHeight = 0;
-    displaySource = '';
+    releaseStartupPriority();
+    postActivity({playing:false,seeking:false});
+    diagnosticGeometry = null;
+    intrinsicGeometry = null;
+    displayGeometry = null;
     clearVideoBox();
     resetWatchdog();
     viewer.classList.remove('lh-player-portrait','lh-player-landscape');
