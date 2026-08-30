@@ -523,6 +523,8 @@
       autoAnalyzeLibrary: !!$('#aiAutoLibrary')?.checked,
       backgroundMode: $('#aiBackgroundMode')?.value || 'balanced',
       showViewerButton: !!$('#aiViewerButton')?.checked,
+      onboardingCompleted: settingsCache?.onboardingCompleted !== false,
+      aiOptIn: settingsCache?.aiOptIn === true,
       groups,
     };
   }

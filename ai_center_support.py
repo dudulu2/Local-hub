@@ -370,7 +370,11 @@ def install(server_module, auto_tag_support_module, siglip_support_module) -> No
                     data = self._read_json()
                     action = str(data.get("action", "save"))
                     if action == "reset":
-                        saved = settings_store.save(ai_settings_support.DEFAULT_SETTINGS)
+                        current = settings_store.snapshot()
+                        defaults = dict(ai_settings_support.DEFAULT_SETTINGS)
+                        defaults["onboardingCompleted"] = current.get("onboardingCompleted", True)
+                        defaults["aiOptIn"] = current.get("aiOptIn", False)
+                        saved = settings_store.save(defaults)
                     elif action == "save":
                         saved = settings_store.save(data.get("settings", {}))
                     else:

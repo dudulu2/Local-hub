@@ -105,6 +105,8 @@ DEFAULT_SETTINGS = {
     "autoAnalyzeLibrary": True,
     "backgroundMode": "balanced",
     "showViewerButton": True,
+    "onboardingCompleted": False,
+    "aiOptIn": False,
     "groups": DEFAULT_GROUPS,
 }
 
@@ -121,6 +123,8 @@ def normalize_settings(raw) -> dict:
         "autoAnalyzeLibrary": bool(source.get("autoAnalyzeLibrary", DEFAULT_SETTINGS["autoAnalyzeLibrary"])),
         "backgroundMode": str(source.get("backgroundMode", DEFAULT_SETTINGS["backgroundMode"])),
         "showViewerButton": bool(source.get("showViewerButton", DEFAULT_SETTINGS["showViewerButton"])),
+        "onboardingCompleted": bool(source.get("onboardingCompleted", DEFAULT_SETTINGS["onboardingCompleted"])),
+        "aiOptIn": bool(source.get("aiOptIn", DEFAULT_SETTINGS["aiOptIn"])),
         "groups": [],
     }
     if result["backgroundMode"] not in {"idle", "balanced"}:

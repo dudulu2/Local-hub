@@ -13,12 +13,18 @@ import traceback
 import urllib.error
 import urllib.request
 import webbrowser
+
+import network_privacy
 from pathlib import Path
 
 HOST = "127.0.0.1"
 PREFERRED_PORT = 8787
 RUNTIME_FILE = "runtime.json"
 ERROR_ALREADY_EXISTS = 183
+
+# LocalHub is intentionally loopback-only. Block DNS and outbound sockets before
+# any server extension or optional AI dependency is initialized.
+network_privacy.install()
 
 # LocalHub talks only to its own loopback HTTP server. Never let Windows proxy,
 # VPN, PAC, or capture-software settings route these requests away from 127.0.0.1.
@@ -226,6 +232,8 @@ def configure_server(root: Path):
     server.STATIC_FILES["/v23_features.css"] = app_dir / "v23_features.css"
     server.STATIC_FILES["/v23_player_fix.js"] = app_dir / "v23_player_fix.js"
     server.STATIC_FILES["/v23_player_fix.css"] = app_dir / "v23_player_fix.css"
+    server.STATIC_FILES["/ai_first_run.js"] = app_dir / "ai_first_run.js"
+    server.STATIC_FILES["/ai_first_run.css"] = app_dir / "ai_first_run.css"
 
     rating_support.install(server, smart_mode)
     catalog_cache.cleanup_legacy_thumbnail_cache(root)
@@ -291,7 +299,7 @@ def self_test() -> int:
             "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
             "move_branding.js", "v23_features.js", "v23_features.css", "v23_player_fix.js", "v23_player_fix.css",
             "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",
-            "ai_center.js", "ai_center.css",
+            "ai_center.js", "ai_center.css", "ai_first_run.js", "ai_first_run.css",
         ):
             if not (app_dir / name).exists():
                 return 20
@@ -306,7 +314,7 @@ def self_test() -> int:
                 return 30
             with local_urlopen(base + "/", timeout=3.0) as response:
                 body = response.read()
-                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body or b"ai_center.js" not in body:
+                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body or b"ai_center.js" not in body or b"ai_first_run.js" not in body:
                     return 31
             with local_urlopen(base + "/api/smart/home", timeout=5.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))

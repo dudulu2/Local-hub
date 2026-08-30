@@ -29,6 +29,8 @@ a = Analysis(
         ('playback_stability.js', '.'),
         ('ai_center.css', '.'),
         ('ai_center.js', '.'),
+        ('ai_first_run.css', '.'),
+        ('ai_first_run.js', '.'),
     ] + imageio_datas,
     hiddenimports=[
         'pystray._win32',
@@ -40,6 +42,7 @@ a = Analysis(
         'ai_settings_support',
         'ai_center_support',
         'ai_balanced_siglip',
+        'network_privacy',
     ] + imageio_hiddenimports,
     hookspath=[],
     hooksconfig={},
