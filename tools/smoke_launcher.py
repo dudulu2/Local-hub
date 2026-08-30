@@ -125,10 +125,15 @@ with TemporaryDirectory() as tmp:
         group_names = [group.get("name") for group in overview["settings"].get("groups", [])]
         for expected in ("全部视频", "生活", "学习", "风景", "娱乐", "色情"):
             assert expected in group_names, f"missing default AI Tag group: {expected}"
+
+        import ai_balanced_siglip
+        import siglip_encoder
+        assert ai_balanced_siglip.get_mode(root) == "balanced", "balanced AI mode was not activated"
+        assert getattr(siglip_encoder.SiglipOnnxEncoder, "_localhub_balanced_playback_patched", False) is True
     finally:
         httpd.shutdown()
         thread.join(timeout=2.0)
         httpd.server_close()
 
 
-print("launcher startup cleanup, lifecycle, and AI-center smoke test passed")
+print("launcher startup cleanup, lifecycle, AI-center, and balanced-playback smoke test passed")
