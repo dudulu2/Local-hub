@@ -8,6 +8,9 @@
   const tagStrip = $('#viewerTagStrip');
   if (!video || !viewer || !pathNode || !tagStrip) return;
 
+  const DISMISS_COOKIE = 'localhub_ai_hidden';
+  const DISMISS_MAX_AGE = 60 * 60 * 24 * 365 * 5;
+
   let heartbeatTimer = null;
   let uiPollTimer = null;
   let uiToken = 0;
@@ -41,6 +44,25 @@
     toast.timer = setTimeout(() => node.classList.remove('show'), 2100);
   }
 
+  function aiDismissed() {
+    return document.cookie
+      .split(';')
+      .map(value => value.trim())
+      .some(value => value === `${DISMISS_COOKIE}=1`);
+  }
+
+  function hideAiUi({persist = false} = {}) {
+    clearTimeout(uiPollTimer);
+    uiToken++;
+    if (persist) {
+      // Cookies are host-scoped rather than port-scoped, so this preference also
+      // survives the rare case where LocalHub has to use a port other than 8787.
+      document.cookie = `${DISMISS_COOKIE}=1; Max-Age=${DISMISS_MAX_AGE}; Path=/; SameSite=Strict`;
+    }
+    $('#autoTagPanel')?.remove();
+    viewer.classList.remove('autotag-visible');
+  }
+
   function sendActivity(extra = {}) {
     const playing = viewer.open && !video.paused && !video.ended;
     return post('/api/io/activity', {playing, ...extra}).catch(() => {});
@@ -71,6 +93,10 @@
   });
 
   function ensurePanel() {
+    if (aiDismissed()) {
+      hideAiUi();
+      return null;
+    }
     let panel = $('#autoTagPanel');
     if (panel) return panel;
     panel = document.createElement('section');
@@ -78,12 +104,19 @@
     panel.className = 'autotag-panel';
     panel.innerHTML = `
       <div class="autotag-head">
-        <div><b>AI Tag</b><span>SigLIP · 本地视觉分析</span></div>
-        <span id="autoTagState" class="autotag-state"></span>
+        <div class="autotag-title">
+          <b>AI Tag</b>
+          <span>SigLIP · 本地视觉分析</span>
+        </div>
+        <div class="autotag-head-actions">
+          <span id="autoTagState" class="autotag-state"></span>
+          <button type="button" class="autotag-dismiss" data-auto-dismiss aria-label="不再显示 AI Tag" title="不再显示 AI Tag">×</button>
+        </div>
       </div>
       <div id="autoTagSuggestions" class="autotag-suggestions"></div>
       <div id="autoTagActions" class="autotag-actions"></div>`;
     tagStrip.insertAdjacentElement('afterend', panel);
+    viewer.classList.add('autotag-visible');
     return panel;
   }
 
@@ -93,7 +126,8 @@
   }
 
   function setPanel(state, suggestions = '', actions = '') {
-    ensurePanel();
+    const panel = ensurePanel();
+    if (!panel) return;
     const stateNode = $('#autoTagState');
     const list = $('#autoTagSuggestions');
     const actionNode = $('#autoTagActions');
@@ -146,26 +180,39 @@
 
   async function refreshPanel({poll = false} = {}) {
     clearTimeout(uiPollTimer);
+    if (aiDismissed()) {
+      hideAiUi();
+      return;
+    }
     const path = currentPath();
     if (!viewer.open || !path) return;
     const token = ++uiToken;
     try {
       const status = await json(`/api/auto-tag/status?path=${encodeURIComponent(path)}`);
-      if (token !== uiToken || currentPath() !== path) return;
+      if (token !== uiToken || currentPath() !== path || aiDismissed()) return;
       const model = status.model || {};
       if (!model.installed) {
         if (model.installing) {
           const pct = model.totalBytes ? Math.min(100, model.downloadedBytes / model.totalBytes * 100) : 0;
-          const ioText = status.io?.playing || status.io?.seeking ? ' · 播放中暂停写盘' : '';
+          const ioText = status.io?.playing || status.io?.seeking ? ' · 播放优先' : '';
           setPanel(
-            `模型下载 ${pct.toFixed(0)}%${ioText}`,
-            `<div class="autotag-progress"><i style="width:${pct}%"></i></div><small>${bytes(model.downloadedBytes)} / ${bytes(model.totalBytes)}</small>`,
+            `本地安装 ${pct.toFixed(0)}%${ioText}`,
+            `<div class="autotag-install-row"><div class="autotag-progress"><i style="width:${pct}%"></i></div><small>${bytes(model.downloadedBytes)} / ${bytes(model.totalBytes)}</small></div>`,
             ''
           );
           uiPollTimer = setTimeout(() => refreshPanel({poll:true}), 900);
+        } else if (model.localPackageAvailable) {
+          setPanel(
+            '可选功能',
+            '<span class="autotag-empty">离线 AI 模型包已就绪。安装后会移入本机 LocalAppData，校验成功后自动删除 EXE 同目录的模型包。</span>',
+            button('安装本地 AI 模型', 'install', true)
+          );
         } else {
-          const error = model.error ? `<span class="autotag-error">${model.error}</span>` : '<span class="autotag-empty">首次使用需下载约 206 MB，模型保存在本机 LocalAppData，不进入媒体备份目录。</span>';
-          setPanel('未启用', error, button('安装 SigLIP 模型', 'install', true));
+          const reason = model.localPackageError || model.error;
+          const text = reason
+            ? `<span class="autotag-error">${String(reason).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</span>`
+            : '<span class="autotag-empty">未发现离线 AI 模型包。请使用完整 LocalHub 安装包，或将 <b>LocalHub-AI-Model</b> 文件夹放到 LocalHub.exe 同目录。</span>';
+          setPanel('模型未安装', text, '');
         }
         return;
       }
@@ -177,7 +224,8 @@
           setPanel(paused ? '已排队 · 播放优先' : '正在分析', '<span class="autotag-empty">固定时间点抽帧，不扫描整段视频。</span>', '');
           uiPollTimer = setTimeout(() => refreshPanel({poll:true}), 1000);
         } else {
-          setPanel('尚未分析', '<span class="autotag-empty">只在空闲时读取 8 个候选帧，并保留 6 个代表向量。</span>', button('分析当前视频', 'analyze', true));
+          const warning = model.cleanupWarning ? `<span class="autotag-error">${model.cleanupWarning}</span>` : '<span class="autotag-empty">只在空闲时读取 8 个候选帧，并保留 6 个代表向量。</span>';
+          setPanel('模型已就绪', warning, button('分析当前视频', 'analyze', true));
         }
         return;
       }
@@ -194,6 +242,14 @@
   }
 
   document.addEventListener('click', async event => {
+    const dismiss = event.target.closest?.('[data-auto-dismiss]');
+    if (dismiss) {
+      event.preventDefault();
+      event.stopPropagation();
+      hideAiUi({persist:true});
+      return;
+    }
+
     const actionButton = event.target.closest?.('[data-auto-action]');
     if (actionButton) {
       event.preventDefault();
@@ -210,6 +266,7 @@
       } catch (error) {
         toast(error.message || String(error));
         actionButton.disabled = false;
+        refreshPanel();
       }
       return;
     }
@@ -254,9 +311,14 @@
   }, true);
 
   new MutationObserver(() => {
+    if (aiDismissed()) {
+      hideAiUi();
+      return;
+    }
     if (!viewer.open || !currentPath()) return;
     setTimeout(() => refreshPanel(), 80);
   }).observe(pathNode, {subtree:true,childList:true,characterData:true});
+
   viewer.addEventListener('close', () => {
     clearTimeout(uiPollTimer);
     uiToken++;
