@@ -14,6 +14,8 @@ a = Analysis(
         ('smart_index.html', '.'),
         ('smart_ui.css', '.'),
         ('smart_ui.js', '.'),
+        ('library_experience.css', '.'),
+        ('library_experience.js', '.'),
         ('ux_enhancements.css', '.'),
         ('ux_enhancements.js', '.'),
         ('move_branding.js', '.'),
