@@ -153,13 +153,18 @@
   }).observe(folderNav, {childList:true, subtree:false});
 
   function cleanMeta() {
-    if (hint) hint.textContent = '';
+    if (hint && hint.textContent) hint.textContent = '';
     if (!meta) return;
-    let text = meta.textContent || '';
-    text = text.replace(/\s*·\s*首页只展示\s*\d+\s*个视频.*$/u, '');
-    text = text.replace(/\s*·\s*当前页只加载\s*\d+\s*项.*$/u, '');
-    text = text.replace(/\s*·\s*当前页最多\s*\d+\s*项.*$/u, '');
-    meta.textContent = text.trim();
+    const original = meta.textContent || '';
+    let cleaned = original;
+    cleaned = cleaned.replace(/\s*·\s*首页只展示\s*\d+\s*个视频.*$/u, '');
+    cleaned = cleaned.replace(/\s*·\s*当前页只加载\s*\d+\s*项.*$/u, '');
+    cleaned = cleaned.replace(/\s*·\s*当前页最多\s*\d+\s*项.*$/u, '');
+    cleaned = cleaned.trim();
+    // MutationObserver callbacks must be read-mostly. Writing textContent even
+    // when the value is already identical creates a fresh childList mutation and
+    // can form an endless microtask loop in real Chromium/Edge.
+    if (cleaned !== original) meta.textContent = cleaned;
   }
 
   if (meta) new MutationObserver(cleanMeta).observe(meta, {childList:true, subtree:true, characterData:true});
