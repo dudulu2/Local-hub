@@ -230,7 +230,7 @@ PROFESSIONAL_GROUPS = [
     },
     {
         "id": "adult",
-        "name": "成人内容",
+        "name": "色情",
         "enabled": False,
         "tags": [
             _tag("成人内容", "Adult-oriented sexual or erotic content intended for adults.", "Sexually explicit or strongly erotic adult media."),
