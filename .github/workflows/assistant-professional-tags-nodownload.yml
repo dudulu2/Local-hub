@@ -1,0 +1,117 @@
+name: Wire professional tags and no-download playback
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-professional-tags-nodownload.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Apply taxonomy and player changes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # ---- ai_settings_support: migrate old settings to professional v2 ----
+          path = Path('ai_settings_support.py')
+          text = path.read_text('utf-8')
+          if 'import ai_taxonomy_v2' not in text:
+              text = text.replace('import ai_balanced_siglip\n', 'import ai_balanced_siglip\nimport ai_taxonomy_v2\n', 1)
+          marker = '\n\nDEFAULT_SETTINGS = {\n'
+          override = '\n\n# v2 replaces the small starter taxonomy with a professional built-in set.\n# The old literal above is intentionally retained as historical source context;\n# runtime defaults and migrations use the v2 taxonomy below.\nDEFAULT_GROUPS = copy.deepcopy(ai_taxonomy_v2.PROFESSIONAL_GROUPS)\n\nDEFAULT_SETTINGS = {\n'
+          if marker in text and 'DEFAULT_GROUPS = copy.deepcopy(ai_taxonomy_v2.PROFESSIONAL_GROUPS)' not in text:
+              text = text.replace(marker, override, 1)
+          text = text.replace('    "version": 1,\n    "autoAnalyzeLibrary": True,', '    "version": 2,\n    "autoAnalyzeLibrary": True,', 1)
+          text = text.replace(
+              'def normalize_settings(raw) -> dict:\n    source = raw if isinstance(raw, dict) else {}\n    result = {\n        "version": 1,',
+              'def normalize_settings(raw) -> dict:\n    source = ai_taxonomy_v2.upgrade_settings(raw if isinstance(raw, dict) else {})\n    result = {\n        "version": 2,',
+              1,
+          )
+          path.write_text(text, 'utf-8')
+
+          # ---- ai_tag_sync_support: select inside groups, never global top-4 ----
+          path = Path('ai_tag_sync_support.py')
+          text = path.read_text('utf-8')
+          old = '''    @staticmethod\n    def _select(scored: list[tuple[str, float]]) -> list[str]:\n        if not scored:\n            return []\n        best = scored[0][1]\n        values = [score for _, score in scored]\n        median = statistics.median(values)\n        spread = statistics.pstdev(values) if len(values) > 1 else 0.0\n        # Adaptive zero-shot cut: keep tags close to the best match and clearly\n        # above the middle of the candidate distribution. Always keep at least\n        # the strongest match so a successfully indexed video receives a useful\n        # AI classification instead of an empty result.\n        cutoff = max(best - 0.045, median + spread * 0.35)\n        selected = [tag for tag, score in scored if score >= cutoff][:4]\n        return selected or [scored[0][0]]\n'''
+          new = '''    @staticmethod\n    def _select(scored: list[tuple[str, float]], settings: dict) -> list[str]:\n        """Choose tags inside their semantic group instead of one global race.\n\n        A 190-tag vocabulary is useful only if unrelated concepts do not steal\n        each other's slots.  Each enabled group gets its own robust distribution\n        and must show real separation from that group's median/runner-up.  Weak\n        groups are allowed to emit nothing; this is intentionally precision-first.\n        """\n        if not scored:\n            return []\n        score_map = {str(tag).casefold(): (str(tag), float(score)) for tag, score in scored}\n        selected: list[str] = []\n        selected_keys: set[str] = set()\n\n        for group in settings.get("groups", []):\n            if not isinstance(group, dict) or not group.get("enabled"):\n                continue\n            candidates: list[tuple[str, float]] = []\n            for row in group.get("tags", []):\n                if not isinstance(row, dict):\n                    continue\n                key = str(row.get("tag", "")).strip().casefold()\n                if key and key in score_map:\n                    candidates.append(score_map[key])\n            candidates.sort(key=lambda row: row[1], reverse=True)\n            if len(candidates) < 3:\n                continue\n\n            values = [score for _, score in candidates]\n            median = statistics.median(values)\n            spread = statistics.pstdev(values) if len(values) > 1 else 0.0\n            best = candidates[0][1]\n            runner = candidates[1][1]\n            best_lift = best - median\n            gap = best - runner\n\n            # Flat distributions mean SigLIP does not really know which label is\n            # better.  Do not force a tag just because every group has a winner.\n            min_lift = max(0.006, spread * 0.72)\n            min_gap = max(0.0022, spread * 0.12)\n            if best_lift < min_lift or (gap < min_gap and best_lift < max(0.012, spread * 1.35)):\n                continue\n\n            group_id = str(group.get("id", ""))\n            max_tags = 5 if group_id == "all" else 2\n            cutoff = max(median + max(0.0045, spread * 0.62), best - (0.024 if group_id == "all" else 0.016))\n            for tag, score in candidates:\n                if len([x for x in selected if x.casefold() in {r[0].casefold() for r in candidates}]) >= max_tags:\n                    break\n                if score < cutoff:\n                    break\n                key = tag.casefold()\n                if key not in selected_keys:\n                    selected_keys.add(key)\n                    selected.append(tag)\n\n        return selected[:12]\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'Choose tags inside their semantic group instead of one global race' not in text:
+              raise SystemExit('AI tag selector anchor changed')
+          text = text.replace('        desired = self._select(scored)\n', '        desired = self._select(scored, self.settings())\n', 1)
+          path.write_text(text, 'utf-8')
+
+          # ---- smart_index: browser-native media controls may never offer Download ----
+          path = Path('smart_index.html')
+          text = path.read_text('utf-8')
+          text = text.replace(
+              '<video id="videoPlayer" playsinline preload="metadata"></video>',
+              '<video id="videoPlayer" playsinline preload="metadata" controlslist="nodownload noremoteplayback" disablepictureinpicture></video>',
+              1,
+          )
+          path.write_text(text, 'utf-8')
+
+          # ---- v23_player_fix: enforce no-download even if browser/source changes ----
+          path = Path('v23_player_fix.js')
+          text = path.read_text('utf-8')
+          anchor = "  document.documentElement.dataset.interactionFix = '2.4-probe-failfast';\n"
+          block = '''  document.documentElement.dataset.interactionFix = '2.4-probe-failfast';\n\n  // LocalHub is already reading local files. Hide browser download/export\n  // affordances so playback behaves like a library player rather than a web\n  // download page. This removes Chromium's media-menu Download item, blocks the\n  // video context menu/drag-out path, and keeps the media inline.\n  function enforceNoDownload() {\n    if (!video) return;\n    video.setAttribute('controlslist', 'nodownload noremoteplayback');\n    video.controlsList?.add?.('nodownload');\n    video.controlsList?.add?.('noremoteplayback');\n    video.disableRemotePlayback = true;\n    video.disablePictureInPicture = true;\n    video.setAttribute('draggable', 'false');\n  }\n  enforceNoDownload();\n  video?.addEventListener('loadedmetadata', enforceNoDownload);\n  video?.addEventListener('contextmenu', event => { event.preventDefault(); event.stopPropagation(); });\n  video?.addEventListener('dragstart', event => event.preventDefault());\n  window.addEventListener('keydown', event => {\n    if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === 's') {\n      event.preventDefault();\n      toast('LocalHub 是本地媒体库，无需下载');\n    }\n  }, true);\n'''
+          if anchor in text and 'function enforceNoDownload()' not in text:
+              text = text.replace(anchor, block, 1)
+          path.write_text(text, 'utf-8')
+
+          # ---- server: explicitly serve media inline, never as an attachment ----
+          path = Path('server.py')
+          text = path.read_text('utf-8')
+          old = '            extra = {"Accept-Ranges": "bytes"}\n'
+          new = '            extra = {"Accept-Ranges": "bytes", "Content-Disposition": f"inline; filename*=UTF-8\\\'\\\'{urllib.parse.quote(file_path.name)}"}\n'
+          if old in text:
+              text = text.replace(old, new, 1)
+          path.write_text(text, 'utf-8')
+
+          # ---- smoke_auto_tag: taxonomy size, migration and grouped precision ----
+          path = Path('tools/smoke_auto_tag.py')
+          text = path.read_text('utf-8')
+          if 'import ai_taxonomy_v2' not in text:
+              text = text.replace('import launcher\n', 'import launcher\nimport ai_taxonomy_v2\nimport ai_settings_support\nfrom ai_tag_sync_support import AITagReconciler\n', 1)
+          marker = 'def main() -> None:\n'
+          insert = '''def main() -> None:\n    # Professional built-ins all have enough semantic granularity for a useful\n    # within-group competition. Old v1 settings upgrade without losing opt-ins.\n    assert all(len(group["tags"]) >= 20 for group in ai_taxonomy_v2.PROFESSIONAL_GROUPS)\n    migrated = ai_settings_support.normalize_settings({\n        "version": 1,\n        "aiOptIn": True,\n        "groups": [{"id":"adult", "name":"色情", "enabled":True, "tags":[]}],\n    })\n    assert migrated["version"] == 2\n    adult = next(group for group in migrated["groups"] if group["id"] == "adult")\n    assert adult["enabled"] is True and len(adult["tags"]) >= 20\n\n    grouped_settings = {"groups":[\n        {"id":"entertainment","enabled":True,"tags":[{"tag":"直播"},{"tag":"播客"},{"tag":"访谈"},{"tag":"综艺"}]},\n        {"id":"scenery","enabled":True,"tags":[{"tag":"海边"},{"tag":"山地"},{"tag":"森林"},{"tag":"雪景"}]},\n    ]}\n    picked = AITagReconciler._select(\n        [("直播",.31),("播客",.282),("访谈",.274),("综艺",.268),("海边",.201),("山地",.199),("森林",.198),("雪景",.197)],\n        grouped_settings,\n    )\n    assert "直播" in picked and not any(tag in picked for tag in {"海边","山地","森林","雪景"}), picked\n\n'''
+          if marker in text and 'Professional built-ins all have enough semantic granularity' not in text:
+              text = text.replace(marker, insert, 1)
+          path.write_text(text, 'utf-8')
+
+          # ---- frontend smoke: guard the Chromium no-download controls ----
+          path = Path('tools/smoke_frontend_guard.py')
+          text = path.read_text('utf-8')
+          marker = 'assert "/api/rating?path=" in ai_tag_sync\n'
+          addition = marker + '''\n# Browser-native media Download must stay unavailable on local playback.\nassert 'controlslist="nodownload noremoteplayback"' in html\nassert "function enforceNoDownload()" in player_fix\nassert "video.controlsList?.add?.('nodownload')" in player_fix\nassert "video?.addEventListener('contextmenu'" in player_fix\n'''
+          if marker in text and 'Browser-native media Download must stay unavailable' not in text:
+              text = text.replace(marker, addition, 1)
+          path.write_text(text, 'utf-8')
+          PY
+
+          python -m py_compile ai_taxonomy_v2.py ai_settings_support.py ai_tag_sync_support.py server.py tools/smoke_auto_tag.py
+          node --check v23_player_fix.js
+          python tools/smoke_frontend_guard.py
+          python tools/smoke_auto_tag.py
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ai_settings_support.py ai_tag_sync_support.py smart_index.html v23_player_fix.js server.py tools/smoke_auto_tag.py tools/smoke_frontend_guard.py
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+          else
+            git commit -m 'feat: professionalize AI tags and disable media downloads'
+            git push origin HEAD:fix/tray-lifecycle-2.4.1
+          fi
