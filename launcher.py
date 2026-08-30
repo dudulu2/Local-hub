@@ -223,6 +223,7 @@ def configure_server(root: Path):
     import auto_tag_support
     import siglip_support
     import ai_center_support
+    import browser_privacy
 
     app_dir = Path(server.APP_DIR)
     server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
@@ -246,6 +247,7 @@ def configure_server(root: Path):
     auto_tag_support.install(server, smart_mode)
     siglip_support.install(server, auto_tag_support)
     ai_center_support.install(server, auto_tag_support, siglip_support)
+    browser_privacy.install(server)
     cleanup_compat_cache(root)
     return server
 

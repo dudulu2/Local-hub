@@ -43,6 +43,7 @@ a = Analysis(
         'ai_center_support',
         'ai_balanced_siglip',
         'network_privacy',
+        'browser_privacy',
     ] + imageio_hiddenimports,
     hookspath=[],
     hooksconfig={},
