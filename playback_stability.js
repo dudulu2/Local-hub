@@ -23,6 +23,16 @@
   let stalls = [];
   let unstableNotifiedAt = 0;
 
+  // Chromium's intrinsic videoWidth/videoHeight can describe the coded frame
+  // instead of the rotated/display frame for some phone MP4/MOV files. Keep a
+  // separate display geometry, preferably from LocalHub's FFmpeg probe, and fit
+  // the element box explicitly so a 9:16 clip can never be cropped by a 16:9
+  // player shell.
+  let displayWidth = 0;
+  let displayHeight = 0;
+  let displaySource = '';
+  let orientationRequest = 0;
+
   function showPassiveNotice(title, text) {
     if (!notice) return;
     if (noticeTitle) noticeTitle.textContent = title;
@@ -48,6 +58,89 @@
     showPassiveNotice('浏览器播放时间轴不稳定', `${reason}。建议使用“兼容播放”或系统播放器，LocalHub 不会自动启动后台转码。`);
   }
 
+  function clearVideoBox() {
+    for (const property of ['width', 'height', 'max-width', 'max-height', 'aspect-ratio']) {
+      video.style.removeProperty(property);
+    }
+  }
+
+  function fitVideoBox() {
+    const width = Number(displayWidth) || 0;
+    const height = Number(displayHeight) || 0;
+    const stageWidth = stage.clientWidth || 0;
+    const stageHeight = stage.clientHeight || 0;
+    if (!viewer.open || !width || !height || !stageWidth || !stageHeight) return;
+
+    const scale = Math.min(stageWidth / width, stageHeight / height);
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    const fittedWidth = Math.max(1, Math.floor(width * scale));
+    const fittedHeight = Math.max(1, Math.floor(height * scale));
+
+    // Explicit pixel geometry avoids relying on a replaced element's coded
+    // intrinsic ratio when rotation metadata says the display ratio is different.
+    video.style.setProperty('width', `${fittedWidth}px`, 'important');
+    video.style.setProperty('height', `${fittedHeight}px`, 'important');
+    video.style.setProperty('max-width', '100%', 'important');
+    video.style.setProperty('max-height', '100%', 'important');
+    video.style.setProperty('aspect-ratio', `${width} / ${height}`, 'important');
+    video.style.setProperty('object-fit', 'contain', 'important');
+    video.style.setProperty('object-position', 'center center', 'important');
+  }
+
+  function applyOrientation(width, height, source = 'intrinsic') {
+    width = Number(width) || 0;
+    height = Number(height) || 0;
+    if (!width || !height) return;
+
+    // A successful FFmpeg display-size probe is authoritative. Do not let a
+    // later Chromium intrinsic resize event overwrite a rotated portrait ratio.
+    if (displaySource === 'probe' && source !== 'probe') {
+      fitVideoBox();
+      return;
+    }
+
+    displayWidth = width;
+    displayHeight = height;
+    displaySource = source;
+    const portrait = height > width * 1.08;
+    viewer.classList.toggle('lh-player-portrait', portrait);
+    viewer.classList.toggle('lh-player-landscape', !portrait);
+    stage.classList.toggle('lh-stage-portrait', portrait);
+    stage.style.setProperty('--lh-media-aspect', `${width}/${height}`);
+
+    // The class changes the dialog/player-shell dimensions, so fit after layout
+    // has settled as well as once immediately.
+    fitVideoBox();
+    requestAnimationFrame(() => {
+      fitVideoBox();
+      requestAnimationFrame(fitVideoBox);
+    });
+  }
+
+  function fitIntrinsic() {
+    if (video.videoWidth && video.videoHeight) {
+      applyOrientation(video.videoWidth, video.videoHeight, 'intrinsic');
+    }
+  }
+
+  async function fitFromProbe(path) {
+    const clean = String(path || '').trim();
+    if (!clean) return;
+    const request = ++orientationRequest;
+    try {
+      const response = await fetch(`/api/media/probe?path=${encodeURIComponent(clean)}`, {cache:'no-store'});
+      if (!response.ok) return;
+      const data = await response.json();
+      if (request !== orientationRequest || !viewer.open || pathNode.textContent.trim() !== clean) return;
+      const probe = data?.probe || {};
+      const width = Number(probe.displayWidth || probe.width) || 0;
+      const height = Number(probe.displayHeight || probe.height) || 0;
+      if (width && height) applyOrientation(width, height, 'probe');
+    } catch {
+      // Orientation is best-effort; intrinsic dimensions remain the fallback.
+    }
+  }
+
   // Normal web-player interaction. No media source mutation happens here.
   video.style.cursor = 'pointer';
   video.addEventListener('click', event => {
@@ -65,33 +158,39 @@
     else stage.requestFullscreen?.();
   });
 
-  function applyOrientation(width, height) {
-    width = Number(width) || 0;
-    height = Number(height) || 0;
-    if (!width || !height) return;
-    const portrait = height > width * 1.08;
-    viewer.classList.toggle('lh-player-portrait', portrait);
-    viewer.classList.toggle('lh-player-landscape', !portrait);
-    stage.classList.toggle('lh-stage-portrait', portrait);
-    stage.style.setProperty('--lh-media-aspect', `${width}/${height}`);
-  }
-
-  function fitIntrinsic() {
-    if (video.videoWidth && video.videoHeight) {
-      applyOrientation(video.videoWidth, video.videoHeight);
-    }
-  }
-
   video.addEventListener('loadedmetadata', () => {
     fitIntrinsic();
+    const path = pathNode.textContent.trim();
+    if (path) fitFromProbe(path);
     requestAnimationFrame(fitIntrinsic);
     resetWatchdog();
   });
-  video.addEventListener('loadeddata', fitIntrinsic);
-  video.addEventListener('resize', fitIntrinsic);
+  video.addEventListener('loadeddata', () => {
+    fitIntrinsic();
+    fitVideoBox();
+  });
+  video.addEventListener('resize', () => {
+    fitIntrinsic();
+    fitVideoBox();
+  });
   video.addEventListener('seeking', () => { lastSeekAt = performance.now(); });
   video.addEventListener('seeked', resetWatchdog);
   video.addEventListener('emptied', resetWatchdog);
+
+  new MutationObserver(() => {
+    displayWidth = 0;
+    displayHeight = 0;
+    displaySource = '';
+    clearVideoBox();
+    const path = pathNode.textContent.trim();
+    if (path && viewer.open) fitFromProbe(path);
+  }).observe(pathNode, {subtree:true, childList:true, characterData:true});
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => fitVideoBox()).observe(stage);
+  } else {
+    window.addEventListener('resize', fitVideoBox);
+  }
 
   // Runtime guard only OBSERVES playback. It never changes src and never starts
   // FFmpeg. Two clear timestamp jumps in a short window pause playback and offer
@@ -151,9 +250,15 @@
 
   viewer.addEventListener('close', () => {
     const path = (pathNode.textContent || '').trim();
+    orientationRequest++;
+    displayWidth = 0;
+    displayHeight = 0;
+    displaySource = '';
+    clearVideoBox();
     resetWatchdog();
     viewer.classList.remove('lh-player-portrait','lh-player-landscape');
     stage.classList.remove('lh-stage-portrait');
+    stage.style.removeProperty('--lh-media-aspect');
     cancelCompat(path);
     clearRecommendationHover();
   });
