@@ -1,0 +1,175 @@
+name: Wire home pagination and managed AI tags
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-home-pagination-ai-sync.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Apply product UX patches
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # ---------- smart_mode.py: deterministic random home pages ----------
+          path = Path('smart_mode.py')
+          text = path.read_text('utf-8')
+          old_home = '''    def home(self) -> list[dict]:\n        self._await()\n        with self.lock:\n            root_videos = [item for item in self.direct_by_folder.get("", []) if item["type"] == "video"]\n            all_videos = [item for item in self.items if item["type"] == "video"]\n            by_folder = defaultdict(list)\n            for item in all_videos:\n                if item.get("folder"):\n                    by_folder[item["folder"]].append(item)\n\n        root_videos.sort(key=lambda item: item.get("modified", 0), reverse=True)\n        selected = root_videos[:HOME_MAX]\n        selected_ids = {item["id"] for item in selected}\n        if len(selected) < HOME_MIN:\n            day = int(time.time() // 86400)\n            seed_text = f"{self.store.root}|{day}"\n            seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)\n            rng = random.Random(seed)\n            folders = list(by_folder)\n            rng.shuffle(folders)\n            for folder in folders:\n                choices = [x for x in by_folder[folder] if x["id"] not in selected_ids]\n                if not choices:\n                    continue\n                item = rng.choice(choices)\n                selected.append(item)\n                selected_ids.add(item["id"])\n                if len(selected) >= HOME_MIN:\n                    break\n            if len(selected) < HOME_MAX:\n                rest = [item for item in all_videos if item["id"] not in selected_ids]\n                rng.shuffle(rest)\n                selected.extend(rest[: HOME_MAX - len(selected)])\n        return [_media_public(item) for item in selected[:HOME_MAX]]\n'''
+          new_home = '''    def home(self, offset: int = 0, limit: int = HOME_MAX, seed: str = "") -> dict:\n        """Return one stable random home sequence without repeats.\n\n        Page one prioritizes videos directly beside LocalHub.exe. If there are\n        at least 15 root videos, 15 are sampled from that root pool. If there\n        are fewer, all root videos are kept and random videos from subfolders\n        fill the first page. Remaining pages shuffle every still-unseen video,\n        so a browsing round never repeats an item before the library is exhausted.\n        """\n        self._await()\n        limit = max(1, min(HOME_MAX, int(limit or HOME_MAX)))\n        offset = max(0, int(offset or 0))\n        with self.lock:\n            root_videos = [item for item in self.direct_by_folder.get("", []) if item["type"] == "video"]\n            all_videos = [item for item in self.items if item["type"] == "video"]\n\n        root_videos = sorted(root_videos, key=lambda item: item["id"].casefold())\n        all_videos = sorted(all_videos, key=lambda item: item["id"].casefold())\n        seed_text = f"{self.store.root}|{str(seed)[:128] or int(time.time() // 86400)}"\n        seed_value = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)\n        rng = random.Random(seed_value)\n\n        root_pool = list(root_videos)\n        rng.shuffle(root_pool)\n        if len(root_pool) >= HOME_MAX:\n            first = root_pool[:HOME_MAX]\n        else:\n            first = list(root_pool)\n            root_ids = {item["id"] for item in first}\n            others = [item for item in all_videos if item["id"] not in root_ids]\n            rng.shuffle(others)\n            first.extend(others[: max(0, HOME_MAX - len(first))])\n\n        first_ids = {item["id"] for item in first}\n        remaining = [item for item in all_videos if item["id"] not in first_ids]\n        rng.shuffle(remaining)\n        ordered = first + remaining\n        page = ordered[offset: offset + limit]\n        return {\n            "items": [_media_public(item) for item in page],\n            "total": len(ordered),\n            "offset": offset,\n            "limit": limit,\n            "hasMore": offset + limit < len(ordered),\n        }\n'''
+          if old_home in text:
+              text = text.replace(old_home, new_home, 1)
+          elif 'def home(self, offset: int = 0' not in text:
+              raise SystemExit('smart_mode home() changed; refusing unsafe patch')
+
+          old_catalog = '        catalog = Catalog(store)\n\n        class SmartHandler(BaseHandler):\n'
+          new_catalog = '        catalog = Catalog(store)\n        store._smart_catalog = catalog\n\n        class SmartHandler(BaseHandler):\n'
+          if old_catalog in text:
+              text = text.replace(old_catalog, new_catalog, 1)
+
+          old_endpoint = '                if path == "/api/smart/home":\n                    return self._send_json({"items": catalog.home(), "folders": catalog.folders(), "stats": catalog.stats()})\n'
+          new_endpoint = '''                if path == "/api/smart/home":\n                    try:\n                        offset = int(query.get("offset", ["0"])[0] or 0)\n                        limit = int(query.get("limit", [str(HOME_MAX)])[0] or HOME_MAX)\n                    except ValueError:\n                        offset, limit = 0, HOME_MAX\n                    payload = catalog.home(offset=offset, limit=limit, seed=query.get("seed", [""])[0])\n                    payload["folders"] = catalog.folders()\n                    payload["stats"] = catalog.stats()\n                    return self._send_json(payload)\n'''
+          if old_endpoint in text:
+              text = text.replace(old_endpoint, new_endpoint, 1)
+          elif 'payload = catalog.home(offset=offset' not in text:
+              raise SystemExit('smart home endpoint changed; refusing unsafe patch')
+          path.write_text(text, 'utf-8')
+
+          # ---------- smart_ui.js: 15-item home paging with a stable seed ----------
+          path = Path('smart_ui.js')
+          text = path.read_text('utf-8')
+          if 'const HOME_PAGE_SIZE = 15;' not in text:
+              text = text.replace('  const PAGE_SIZE = 30;\n', '  const PAGE_SIZE = 30;\n  const HOME_PAGE_SIZE = 15;\n', 1)
+          text = text.replace(
+              "    playbackMode: 'native', compatJob: null, compatPoll: null, restoreTime: 0,\n",
+              "    playbackMode: 'native', compatJob: null, compatPoll: null, restoreTime: 0, homeSeed: '',\n",
+              1,
+          )
+          old_pager = '''  function updatePager() {\n    const paged = state.route !== 'home' && state.total > PAGE_SIZE;\n    el.pager.classList.toggle('hidden', !paged); if (!paged) return;\n    const page = Math.floor(state.offset / PAGE_SIZE) + 1, pages = Math.max(1, Math.ceil(state.total / PAGE_SIZE));\n    el.pageInfo.textContent = `第 ${page} / ${pages} 页`; el.prevPage.disabled = state.offset <= 0; el.nextPage.disabled = !state.hasMore;\n  }\n'''
+          new_pager = '''  function updatePager() {\n    const pageSize = state.route === 'home' ? HOME_PAGE_SIZE : PAGE_SIZE;\n    const paged = state.total > pageSize;\n    el.pager.classList.toggle('hidden', !paged); if (!paged) return;\n    const page = Math.floor(state.offset / pageSize) + 1, pages = Math.max(1, Math.ceil(state.total / pageSize));\n    el.pageInfo.textContent = `第 ${page} / ${pages} 页`; el.prevPage.disabled = state.offset <= 0; el.nextPage.disabled = !state.hasMore;\n  }\n'''
+          if old_pager in text:
+              text = text.replace(old_pager, new_pager, 1)
+
+          old_load = '''  async function loadHome() {\n    const token = ++state.requestToken; state.route='home'; state.folder=''; state.query=''; state.offset=0; state.total=0; state.hasMore=false; state.clientIds=[];\n    navActive('home'); el.title.textContent='首页'; el.meta.textContent='正在读取轻量索引…'; el.hint.textContent='最多 15 个视频';\n    const d = await api('/api/smart/home'); if (token !== state.requestToken) return;\n    state.items=d.items||[]; state.folders=d.folders||[]; state.stats=d.stats||{}; state.total=state.items.length;\n    renderFolders(); renderFull(); el.meta.textContent=`${state.stats.videos||0} 个视频 · ${state.stats.images||0} 张图片 · 首页只展示 ${state.items.length} 个视频`;\n  }\n'''
+          new_load = '''  async function loadHome({offset=0, keepSeed=false}={}) {\n    const token = ++state.requestToken; state.route='home'; state.folder=''; state.query=''; state.offset=Math.max(0,offset); state.clientIds=[];\n    if (!keepSeed || !state.homeSeed) state.homeSeed = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;\n    navActive('home'); el.title.textContent='首页'; el.meta.textContent='正在读取轻量索引…'; el.hint.textContent='';\n    const d = await api(`/api/smart/home?offset=${state.offset}&limit=${HOME_PAGE_SIZE}&seed=${encodeURIComponent(state.homeSeed)}`); if (token !== state.requestToken) return;\n    state.items=d.items||[]; state.folders=d.folders||[]; state.stats=d.stats||{}; state.total=Number(d.total)||0; state.hasMore=!!d.hasMore;\n    renderFolders(); renderFull(); el.meta.textContent=`${state.stats.videos||0} 个视频 · ${state.stats.images||0} 张图片`;\n  }\n'''
+          if old_load in text:
+              text = text.replace(old_load, new_load, 1)
+          elif 'async function loadHome({offset=0, keepSeed=false}' not in text:
+              raise SystemExit('smart_ui loadHome changed; refusing unsafe patch')
+
+          old_change = "  function changePage(delta){const next=Math.max(0,state.offset+delta*PAGE_SIZE);if(next===state.offset)return;if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));}\n"
+          new_change = "  function changePage(delta){const pageSize=state.route==='home'?HOME_PAGE_SIZE:PAGE_SIZE;const next=Math.max(0,state.offset+delta*pageSize);if(next===state.offset)return;if(state.route==='home')loadHome({offset:next,keepSeed:true}).catch(e=>toast(e.message));else if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));}\n"
+          if old_change in text:
+              text = text.replace(old_change, new_change, 1)
+          path.write_text(text, 'utf-8')
+
+          # ---------- v23_features.js: every root-level page backs to Home ----------
+          path = Path('v23_features.js')
+          text = path.read_text('utf-8')
+          old_click = '''      back.addEventListener('click', () => {\n        const folder = resolveCurrentFolder();\n        if (!folder) return;\n        const parts = folder.replace(/\\\\/g,'/').split('/').filter(Boolean); parts.pop();\n        navigateFolder(parts.join('/'));\n      });\n'''
+          new_click = '''      back.addEventListener('click', () => {\n        const folder = resolveCurrentFolder();\n        if (!folder) {\n          $('#brandBtn')?.click();\n          setTimeout(updateBackButton, 60);\n          return;\n        }\n        const parts = folder.replace(/\\\\/g,'/').split('/').filter(Boolean); parts.pop();\n        navigateFolder(parts.join('/'));\n      });\n'''
+          if old_click in text:
+              text = text.replace(old_click, new_click, 1)
+
+          old_resolve = '''  function resolveCurrentFolder() {\n    const active = $('.folder-nav button.active');\n    if (active?.dataset.folder != null) currentFolder = active.dataset.folder;\n    const title = ($('#pageTitle')?.textContent || '').trim();\n    const specials = new Set(['首页','全部视频','图包 / 图册','Tag / 分类','标签分类','收藏','继续观看','根目录']);\n    if (!specials.has(title) && title && !title.startsWith('搜索：')) currentFolder = title;\n    if (title === '根目录') currentFolder = '';\n    return currentFolder;\n  }\n\n  function updateBackButton() {\n    const back = $('#folderBackBtn'); if (!back) return;\n    const title = ($('#pageTitle')?.textContent || '').trim();\n    const isFolder = title === '根目录' || (!!resolveCurrentFolder() && !title.startsWith('搜索：'));\n    back.classList.toggle('hidden', !isFolder || !resolveCurrentFolder());\n  }\n'''
+          new_resolve = '''  function resolveCurrentFolder() {\n    const title = ($('#pageTitle')?.textContent || '').trim();\n    const activeFolder = $('.folder-nav button.active');\n    const mainActive = $('.main-nav button.active');\n    const rootPages = new Set(['首页','全部视频','新视频','图包 / 图册','Tag / 分类','标签分类','收藏','继续观看','AI 分析','设置','根目录']);\n    if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;\n    else if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';\n    else if (title) currentFolder = title;\n    return currentFolder;\n  }\n\n  function updateBackButton() {\n    const back = $('#folderBackBtn'); if (!back) return;\n    const title = ($('#pageTitle')?.textContent || '').trim();\n    const folder = resolveCurrentFolder();\n    const show = !!title && title !== '首页';\n    back.classList.toggle('hidden', !show);\n    back.title = folder ? '返回上级文件夹' : '返回首页';\n    back.setAttribute('aria-label', back.title);\n  }\n'''
+          if old_resolve in text:
+              text = text.replace(old_resolve, new_resolve, 1)
+          elif "'AI 分析'" not in text:
+              raise SystemExit('v23 back-navigation changed; refusing unsafe patch')
+
+          text = text.replace(
+              "    if (!folder) {\n      $('.main-nav button[data-route=\"root\"]')?.click();\n      setTimeout(updateBackButton,60);\n      return true;\n    }\n",
+              "    if (!folder) {\n      $('#brandBtn')?.click();\n      setTimeout(updateBackButton,60);\n      return true;\n    }\n",
+              1,
+          )
+          path.write_text(text, 'utf-8')
+
+          # ---------- library experience: invalidate Tag category cache live ----------
+          path = Path('library_experience.js')
+          text = path.read_text('utf-8')
+          marker = "  rescan?.addEventListener('click', () => {\n    tagCache = null;\n    tagCacheAt = 0;\n  }, true);\n"
+          addition = marker + "\n  window.addEventListener('localhub:ai-tags-updated', () => {\n    tagCache = null;\n    tagCacheAt = 0;\n  });\n"
+          if marker in text and "localhub:ai-tags-updated" not in text:
+              text = text.replace(marker, addition, 1)
+          path.write_text(text, 'utf-8')
+
+          # ---------- HTML: load live AI-tag sync client ----------
+          path = Path('smart_index.html')
+          text = path.read_text('utf-8')
+          marker = '  <script src="/ai_first_run.js"></script>\n'
+          if marker in text and '/ai_tag_live_sync.js' not in text:
+              text = text.replace(marker, marker + '  <script src="/ai_tag_live_sync.js"></script>\n', 1)
+          path.write_text(text, 'utf-8')
+
+          # ---------- ai_tag_sync_support: expose client static asset ----------
+          path = Path('ai_tag_sync_support.py')
+          text = path.read_text('utf-8')
+          needle = 'def install(server_module, auto_tag_support_module, ai_center_support_module) -> None:\n'
+          insert = needle + '    app_dir = Path(server_module.APP_DIR)\n    server_module.STATIC_FILES["/ai_tag_live_sync.js"] = app_dir / "ai_tag_live_sync.js"\n'
+          if needle in text and 'STATIC_FILES["/ai_tag_live_sync.js"]' not in text:
+              text = text.replace(needle, insert, 1)
+          path.write_text(text, 'utf-8')
+
+          # ---------- launcher: install managed AI tags before browser CSP ----------
+          path = Path('launcher.py')
+          text = path.read_text('utf-8')
+          if '    import ai_tag_sync_support\n' not in text:
+              text = text.replace('    import ai_center_support\n', '    import ai_center_support\n    import ai_tag_sync_support\n', 1)
+          if 'ai_tag_sync_support.install(server, auto_tag_support, ai_center_support)' not in text:
+              text = text.replace(
+                  '    ai_center_support.install(server, auto_tag_support, siglip_support)\n    browser_privacy.install(server)\n',
+                  '    ai_center_support.install(server, auto_tag_support, siglip_support)\n    ai_tag_sync_support.install(server, auto_tag_support, ai_center_support)\n    browser_privacy.install(server)\n',
+                  1,
+              )
+          if '"ai_tag_live_sync.js"' not in text:
+              text = text.replace('            "ai_center.js", "ai_center.css", "ai_first_run.js", "ai_first_run.css",\n', '            "ai_center.js", "ai_center.css", "ai_first_run.js", "ai_first_run.css", "ai_tag_live_sync.js",\n', 1)
+          path.write_text(text, 'utf-8')
+
+          # ---------- PyInstaller: package the live client; normal import catches support module ----------
+          path = Path('LocalHub.spec')
+          text = path.read_text('utf-8')
+          if "('ai_tag_live_sync.js', '.')" not in text:
+              text = text.replace("        ('ai_center.js', '.'),\n", "        ('ai_center.js', '.'),\n        ('ai_tag_live_sync.js', '.'),\n", 1)
+          if "'ai_tag_sync_support'" not in text:
+              text = text.replace("        'ai_balanced_siglip',\n", "        'ai_balanced_siglip',\n        'ai_tag_sync_support',\n", 1)
+          path.write_text(text, 'utf-8')
+
+          # ---------- smoke_smart: verify random home sequence and no repeats ----------
+          path = Path('tools/smoke_smart.py')
+          text = path.read_text('utf-8')
+          marker = '        assert catalog.stats()["videos"] == 21\n'
+          if marker in text and 'home_round_one' not in text:
+              extra = marker + '''\n        # Home browsing is a stable random sequence: 15 per page, no repeats\n        # until every video has appeared. Reusing the same seed makes Back/Next\n        # deterministic instead of reshuffling the page under the user.\n        home_round_one = catalog.home(offset=0, limit=15, seed="smoke-home")\n        home_round_two = catalog.home(offset=15, limit=15, seed="smoke-home")\n        assert len(home_round_one["items"]) == 15\n        first_ids = [row["id"] for row in home_round_one["items"]]\n        second_ids = [row["id"] for row in home_round_two["items"]]\n        assert not (set(first_ids) & set(second_ids)), (first_ids, second_ids)\n        assert len(first_ids + second_ids) == len(set(first_ids + second_ids))\n        repeat_first = catalog.home(offset=0, limit=15, seed="smoke-home")\n        assert [row["id"] for row in repeat_first["items"]] == first_ids\n'''
+              text = text.replace(marker, extra, 1)
+          path.write_text(text, 'utf-8')
+          PY
+
+          python -m py_compile smart_mode.py launcher.py ai_tag_sync_support.py
+          node --check smart_ui.js
+          node --check v23_features.js
+          node --check library_experience.js
+          node --check ai_tag_live_sync.js
+          python tools/smoke_smart.py
+          python tools/smoke_launcher.py
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add smart_mode.py smart_ui.js v23_features.js library_experience.js smart_index.html ai_tag_sync_support.py ai_tag_live_sync.js launcher.py LocalHub.spec tools/smoke_smart.py
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+          else
+            git commit -m 'feat: add randomized home paging and managed live AI tags'
+            git push origin HEAD:fix/tray-lifecycle-2.4.1
+          fi
