@@ -117,6 +117,8 @@ with TemporaryDirectory() as tmp:
         with launcher.local_urlopen(base + "/", timeout=5.0) as response:
             html = response.read().decode("utf-8")
         assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"
+        assert 'id="tagCategoryNav"' in html and "Tag / 分类" in html, "Tag/category sidebar entry is missing"
+        assert '<button data-route="packs"><span>▦</span>图包 / 图册</button>' not in html, "legacy image-pack sidebar entry returned"
 
         with launcher.local_urlopen(base + "/api/ai/overview", timeout=5.0) as response:
             overview = json.loads(response.read().decode("utf-8"))
@@ -136,4 +138,4 @@ with TemporaryDirectory() as tmp:
         httpd.server_close()
 
 
-print("launcher startup cleanup, lifecycle, AI-center, and balanced-playback smoke test passed")
+print("launcher startup cleanup, lifecycle, AI-center, Tag-navigation, and balanced-playback smoke test passed")
