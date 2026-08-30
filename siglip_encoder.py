@@ -6,10 +6,10 @@ import io
 import json
 import os
 import re
+import shutil
 import string
 import threading
 import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -24,6 +24,7 @@ ENCODER_NAME = "siglip-base-patch16-224-int8-v1"
 HF_REVISION = "4649052661e53c7000355844105f8a1792088239"
 HF_REPO = "Xenova/siglip-base-patch16-224"
 MODEL_LICENSE = "Apache-2.0 (base model: google/siglip-base-patch16-224)"
+LOCAL_PACKAGE_DIR = "LocalHub-AI-Model"
 IMAGE_SIZE = 224
 TEXT_LENGTH = 64
 EMBED_DIM = 768
@@ -75,18 +76,27 @@ def _model_cache_dir(media_root: Path) -> Path:
 
 
 class SiglipModelBundle:
-    """External model bundle with explicit opt-in download and SHA256 verification."""
+    """Offline-first SigLIP bundle with explicit opt-in installation.
+
+    Customer builds ship ``LocalHub-AI-Model`` beside LocalHub.exe. The app never
+    needs Hugging Face access at runtime: when the user opts in, the three pinned
+    files are copied into LocalAppData, SHA256-verified, then the portable source
+    folder is removed. Installed files alone never auto-enable inference.
+    """
 
     def __init__(self, root: Path) -> None:
-        self.root = root
-        self.model_dir = _model_cache_dir(root)
+        self.root = root.resolve()
+        self.model_dir = _model_cache_dir(self.root)
         self.marker = self.model_dir / "manifest.json"
+        self.preferences = self.root / ".localhub" / "ai-preferences.json"
         self.lock = threading.RLock()
         self.installing = False
         self.downloaded_bytes = 0
         self.total_bytes = TOTAL_DOWNLOAD_BYTES
         self.error = ""
+        self.cleanup_warning = ""
         self.current_file = ""
+        self.install_mode = ""
         self.thread: threading.Thread | None = None
 
     def file_path(self, name: str) -> Path:
@@ -113,97 +123,191 @@ class SiglipModelBundle:
     def available(self) -> bool:
         return self._marker_valid()
 
+    def _package_candidates(self) -> tuple[Path, ...]:
+        # The first name is the public distribution contract. MODEL_ID is kept as
+        # a developer-friendly fallback without ever scanning arbitrary folders.
+        return (
+            self.root / LOCAL_PACKAGE_DIR,
+            self.root / MODEL_ID,
+        )
+
+    def _package_status(self) -> tuple[Path | None, bool, str]:
+        present = False
+        first_error = ""
+        for candidate in self._package_candidates():
+            if not candidate.is_dir():
+                continue
+            present = True
+            valid = True
+            for row in MODEL_FILES:
+                source = candidate / row.name
+                try:
+                    actual_size = source.stat().st_size
+                except OSError:
+                    valid = False
+                    first_error = first_error or f"本地 AI 模型包缺少 {row.name}"
+                    break
+                if actual_size != row.size:
+                    valid = False
+                    first_error = first_error or f"本地 AI 模型包中的 {row.name} 大小不正确"
+                    break
+            if valid:
+                return candidate, True, ""
+        return None, present, first_error
+
+    def ui_dismissed(self) -> bool:
+        try:
+            data = json.loads(self.preferences.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return bool(data.get("dismissAutoTag"))
+
+    def set_ui_dismissed(self, dismissed: bool = True) -> None:
+        self.preferences.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        try:
+            raw = json.loads(self.preferences.read_text("utf-8"))
+            if isinstance(raw, dict):
+                data = raw
+        except (OSError, json.JSONDecodeError):
+            pass
+        data["dismissAutoTag"] = bool(dismissed)
+        temp = self.preferences.with_suffix(".tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+        os.replace(temp, self.preferences)
+
     def status(self) -> dict:
         with self.lock:
             installed = self.available()
+            package_dir, package_present, package_error = self._package_status()
             return {
                 "id": MODEL_ID,
                 "encoder": ENCODER_NAME,
                 "installed": installed,
                 "installing": self.installing,
+                # Keep this field name for API compatibility; during offline
+                # installation it means bytes copied/verified locally.
                 "downloadedBytes": int(self.downloaded_bytes),
                 "totalBytes": int(self.total_bytes),
                 "currentFile": self.current_file,
                 "error": self.error,
+                "cleanupWarning": self.cleanup_warning,
+                "installMode": self.install_mode,
                 "license": MODEL_LICENSE,
-                "source": f"{HF_REPO}@{HF_REVISION[:12]}",
+                "source": "offline-package",
                 "directory": str(self.model_dir),
+                "localPackageAvailable": bool(package_dir),
+                "localPackagePresent": package_present,
+                "localPackageDirectory": str(package_dir) if package_dir else "",
+                "localPackageError": package_error,
+                "uiDismissed": self.ui_dismissed(),
             }
 
     def start_install(self) -> None:
         with self.lock:
             if self.installing or self.available():
                 return
+            source, package_present, package_error = self._package_status()
+            if source is None:
+                if package_present and package_error:
+                    raise ValueError(package_error)
+                raise ValueError(
+                    f"未找到本地 AI 模型包。请将 {LOCAL_PACKAGE_DIR} 文件夹与 LocalHub.exe 放在同一目录。"
+                )
             self.installing = True
             self.downloaded_bytes = 0
             self.error = ""
+            self.cleanup_warning = ""
             self.current_file = ""
-            self.thread = threading.Thread(target=self._install_worker, name="LocalHubSiglipInstall", daemon=True)
+            self.install_mode = "local"
+            self.thread = threading.Thread(
+                target=self._install_worker,
+                args=(source,),
+                name="LocalHubSiglipInstall",
+                daemon=True,
+            )
             self.thread.start()
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as fp:
+            while True:
+                chunk = fp.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest().lower()
 
     def _existing_valid(self, row: ModelFile) -> bool:
         path = self.file_path(row.name)
         try:
             if path.stat().st_size != row.size:
                 return False
+            return self._hash_file(path) == row.sha256
         except OSError:
             return False
-        digest = hashlib.sha256()
-        try:
-            with path.open("rb") as fp:
-                while True:
-                    chunk = fp.read(4 * 1024 * 1024)
-                    if not chunk:
-                        break
-                    digest.update(chunk)
-        except OSError:
-            return False
-        return digest.hexdigest().lower() == row.sha256
 
-    def _download(self, row: ModelFile) -> None:
+    def _copy_local(self, source_dir: Path, row: ModelFile) -> None:
         target = self.file_path(row.name)
         if self._existing_valid(row):
             with self.lock:
                 self.downloaded_bytes += row.size
             return
+
+        source = source_dir / row.name
+        try:
+            if source.stat().st_size != row.size:
+                raise RuntimeError(f"{row.name} 本地模型文件大小不一致")
+        except OSError as exc:
+            raise RuntimeError(f"无法读取本地模型文件 {row.name}: {exc}") from exc
+
         target.parent.mkdir(parents=True, exist_ok=True)
         part = target.with_suffix(target.suffix + ".part")
         try:
             part.unlink(missing_ok=True)
         except OSError:
             pass
-        request = urllib.request.Request(row.url, headers={"User-Agent": "LocalHub/2.4 AutoTag"})
+
         digest = hashlib.sha256()
         written = 0
-        with urllib.request.urlopen(request, timeout=45) as response, part.open("wb") as out:
-            while True:
-                # Even an explicit model install yields to current playback.
-                # Network can continue to wait; disk writes resume when playback
-                # is no longer marked active.
-                while SCHEDULER.busy():
-                    time.sleep(0.25)
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
-                digest.update(chunk)
-                written += len(chunk)
-                with self.lock:
-                    self.downloaded_bytes += len(chunk)
+        try:
+            with source.open("rb") as src, part.open("wb") as out:
+                while True:
+                    # Installation is explicit but playback still wins disk I/O.
+                    while SCHEDULER.busy():
+                        time.sleep(0.25)
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    digest.update(chunk)
+                    written += len(chunk)
+                    with self.lock:
+                        self.downloaded_bytes += len(chunk)
+        except Exception:
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
         if written != row.size:
-            raise RuntimeError(f"{row.name} 下载大小不一致：{written} != {row.size}")
+            part.unlink(missing_ok=True)
+            raise RuntimeError(f"{row.name} 安装大小不一致：{written} != {row.size}")
         actual = digest.hexdigest().lower()
         if actual != row.sha256:
-            raise RuntimeError(f"{row.name} SHA256 校验失败")
+            part.unlink(missing_ok=True)
+            raise RuntimeError(f"{row.name} SHA256 校验失败，本地模型包可能损坏")
         os.replace(part, target)
 
-    def _install_worker(self) -> None:
+    def _install_worker(self, source_dir: Path) -> None:
         try:
             self.model_dir.mkdir(parents=True, exist_ok=True)
             for row in MODEL_FILES:
                 with self.lock:
                     self.current_file = row.name
-                self._download(row)
+                self._copy_local(source_dir, row)
             marker = {
                 "model": MODEL_ID,
                 "base": "google/siglip-base-patch16-224",
@@ -212,10 +316,20 @@ class SiglipModelBundle:
                 "license": MODEL_LICENSE,
                 "sha256": {row.name: row.sha256 for row in MODEL_FILES},
                 "installedAt": int(time.time() * 1000),
+                "installedFrom": LOCAL_PACKAGE_DIR,
             }
             temp = self.marker.with_suffix(".tmp")
             temp.write_text(json.dumps(marker, ensure_ascii=False, indent=2), "utf-8")
             os.replace(temp, self.marker)
+
+            # Only remove one of our exact package directories, and only after
+            # every installed file has been verified and the manifest committed.
+            if source_dir.resolve() in {path.resolve() for path in self._package_candidates()}:
+                try:
+                    shutil.rmtree(source_dir)
+                except OSError as exc:
+                    with self.lock:
+                        self.cleanup_warning = f"模型已安装，但未能删除离线模型包：{exc}"
         except Exception as exc:
             with self.lock:
                 self.error = str(exc)
