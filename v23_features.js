@@ -101,8 +101,11 @@
     const activeFolder = $('.folder-nav button.active');
     const mainActive = $('.main-nav button.active');
     const rootPages = new Set(['首页','全部视频','新视频','图包 / 图册','Tag / 分类','标签分类','收藏','继续观看','AI 分析','设置','根目录']);
-    if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;
-    else if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';
+    // A root-level page wins over stale folder-nav selection. AI/Tag/etc. may
+    // be opened while a folder remains highlighted in the sidebar, but their
+    // Back action must still return Home rather than climb that old folder.
+    if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';
+    else if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;
     else if (title) currentFolder = title;
     return currentFolder;
   }
