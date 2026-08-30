@@ -17,7 +17,7 @@ jobs:
         with:
           ref: fix/tray-lifecycle-2.4.1
           fetch-depth: 0
-      - name: Patch AI center wiring and folder tree order
+      - name: Patch AI center wiring, folder tree, and Tag navigation
         shell: bash
         run: |
           python - <<'PY'
@@ -80,7 +80,7 @@ jobs:
           smart = Path('smart_mode.py')
           text = smart.read_text('utf-8')
           old = '''    def folders(self, limit: int = 120) -> list[dict]:\n        self._await()\n        with self.lock:\n            rows = [dict(row) for row in self.folder_stats.values()]\n        rows.sort(key=lambda r: (r["path"].count("/"), -r["videos"], -r["images"], r["path"].casefold()))\n        return rows[:limit]\n'''
-          new = '''    def folders(self, limit: int = 120) -> list[dict]:\n        self._await()\n        with self.lock:\n            rows = [dict(row) for row in self.folder_stats.values()]\n\n        # Sidebar folders must be emitted in real tree preorder. Sorting every\n        # depth globally makes a child such as Videos/上课 appear after an\n        # unrelated root folder (for example 亚洲), which visually attaches the\n        # child to the wrong parent. Keep each child directly under its true\n        # parent path instead.\n        by_parent: dict[str, list[dict]] = defaultdict(list)\n        known_paths = {row["path"] for row in rows}\n        for row in rows:\n            path = row["path"]\n            parent = path.rsplit("/", 1)[0] if "/" in path else ""\n            if parent and parent not in known_paths:\n                parent = ""\n            by_parent[parent].append(row)\n\n        for siblings in by_parent.values():\n            siblings.sort(key=lambda r: (-r["videos"], -r["images"], r["name"].casefold(), r["path"].casefold()))\n\n        ordered: list[dict] = []\n        seen: set[str] = set()\n\n        def visit(parent: str) -> None:\n            for row in by_parent.get(parent, []):\n                path = row["path"]\n                if path in seen or len(ordered) >= limit:\n                    continue\n                seen.add(path)\n                ordered.append(row)\n                visit(path)\n\n        visit("")\n        if len(ordered) < min(limit, len(rows)):\n            leftovers = [row for row in rows if row["path"] not in seen]\n            leftovers.sort(key=lambda r: (r["path"].casefold(),))\n            ordered.extend(leftovers[: max(0, limit - len(ordered))])\n        return ordered[:limit]\n'''
+          new = '''    def folders(self, limit: int = 120) -> list[dict]:\n        self._await()\n        with self.lock:\n            rows = [dict(row) for row in self.folder_stats.values()]\n\n        # Sidebar folders must be emitted in real tree preorder. Sorting every\n        # depth globally makes a child appear after an unrelated root folder,\n        # which visually attaches the child to the wrong parent.\n        by_parent: dict[str, list[dict]] = defaultdict(list)\n        known_paths = {row["path"] for row in rows}\n        for row in rows:\n            path = row["path"]\n            parent = path.rsplit("/", 1)[0] if "/" in path else ""\n            if parent and parent not in known_paths:\n                parent = ""\n            by_parent[parent].append(row)\n\n        for siblings in by_parent.values():\n            siblings.sort(key=lambda r: (-r["videos"], -r["images"], r["name"].casefold(), r["path"].casefold()))\n\n        ordered: list[dict] = []\n        seen: set[str] = set()\n\n        def visit(parent: str) -> None:\n            for row in by_parent.get(parent, []):\n                path = row["path"]\n                if path in seen or len(ordered) >= limit:\n                    continue\n                seen.add(path)\n                ordered.append(row)\n                visit(path)\n\n        visit("")\n        if len(ordered) < min(limit, len(rows)):\n            leftovers = [row for row in rows if row["path"] not in seen]\n            leftovers.sort(key=lambda r: (r["path"].casefold(),))\n            ordered.extend(leftovers[: max(0, limit - len(ordered))])\n        return ordered[:limit]\n'''
           if old in text:
               text = text.replace(old, new, 1)
           elif 'Sidebar folders must be emitted in real tree preorder.' not in text:
@@ -90,20 +90,52 @@ jobs:
           smoke = Path('tools/smoke_smart.py')
           text = smoke.read_text('utf-8')
           marker = '        assert any(row["path"] == "incoming" for row in catalog.folders())\n'
-          addition = '''        assert any(row["path"] == "incoming" for row in catalog.folders())\n\n        # Folder navigation is a tree, not a list grouped globally by depth.\n        # A child must be emitted immediately after its real parent before the\n        # next unrelated root folder, otherwise the sidebar visually nests it\n        # under the wrong root.\n        touch(root / "Videos" / "上课" / "lesson.mp4", 1500)\n        touch(root / "亚洲" / "asia.mp4", 1500)\n        catalog.refresh(wait=True, track_new=False)\n        folder_paths = [row["path"] for row in catalog.folders()]\n        videos_index = folder_paths.index("Videos")\n        lesson_index = folder_paths.index("Videos/上课")\n        asia_index = folder_paths.index("亚洲")\n        assert videos_index < lesson_index < asia_index, folder_paths\n'''
+          addition = '''        assert any(row["path"] == "incoming" for row in catalog.folders())\n\n        # Folder navigation is a tree, not a list grouped globally by depth.\n        touch(root / "Videos" / "上课" / "lesson.mp4", 1500)\n        touch(root / "亚洲" / "asia.mp4", 1500)\n        catalog.refresh(wait=True, track_new=False)\n        folder_paths = [row["path"] for row in catalog.folders()]\n        videos_index = folder_paths.index("Videos")\n        lesson_index = folder_paths.index("Videos/上课")\n        asia_index = folder_paths.index("亚洲")\n        assert videos_index < lesson_index < asia_index, folder_paths\n'''
           if marker in text and 'videos_index < lesson_index < asia_index' not in text:
               text = text.replace(marker, addition, 1)
           smoke.write_text(text, 'utf-8')
+
+          # Make Tag/category browsing the real primary navigation entry. Image\n          # packs/readers stay supported inside folders, but no longer occupy a\n          # first-level sidebar slot.
+          index = Path('smart_index.html')
+          text = index.read_text('utf-8')
+          old_nav = '<button data-route="packs"><span>▦</span>图包 / 图册</button>'
+          new_nav = '<button data-route="packs" id="tagCategoryNav"><span>#</span>Tag / 分类</button>'
+          if old_nav in text:
+              text = text.replace(old_nav, new_nav, 1)
+          elif new_nav not in text:
+              raise SystemExit('smart_index.html Tag navigation anchor changed; refusing unsafe patch')
+          index.write_text(text, 'utf-8')
+
+          library = Path('library_experience.js')
+          text = library.read_text('utf-8')
+          text = text.replace("tagNav.innerHTML = '<span>#</span>标签分类';", "tagNav.innerHTML = '<span>#</span>Tag / 分类';")
+          text = text.replace("pageTitle.textContent = '标签分类';", "pageTitle.textContent = 'Tag / 分类';")
+          library.write_text(text, 'utf-8')
+
+          features = Path('v23_features.js')
+          text = features.read_text('utf-8')
+          old_specials = "const specials = new Set(['首页','全部视频','图包 / 图册','收藏','继续观看','根目录']);"
+          new_specials = "const specials = new Set(['首页','全部视频','图包 / 图册','Tag / 分类','标签分类','收藏','继续观看','根目录']);"
+          if old_specials in text:
+              text = text.replace(old_specials, new_specials, 1)
+          features.write_text(text, 'utf-8')
+
+          # Source-level guard: the primary sidebar must not regress to the old\n          # image-pack entry, while the internal pack reader may still exist.
+          html = index.read_text('utf-8')
+          assert '>Tag / 分类</button>' in html
+          assert '<button data-route="packs"><span>▦</span>图包 / 图册</button>' not in html
           PY
 
           python -m py_compile ai_balanced_siglip.py ai_settings_support.py ai_center_support.py launcher.py smart_mode.py tools/smoke_smart.py
           node --check ai_center.js
+          node --check library_experience.js
+          node --check v23_features.js
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add launcher.py LocalHub.spec ai_settings_support.py smart_mode.py tools/smoke_smart.py
+          git add launcher.py LocalHub.spec ai_settings_support.py smart_mode.py tools/smoke_smart.py smart_index.html library_experience.js v23_features.js
           if git diff --cached --quiet; then
-            echo 'No wiring or folder-tree changes needed'
+            echo 'No wiring, folder-tree, or Tag-navigation changes needed'
           else
-            git commit -m 'fix: keep sidebar children under their real parent folder'
+            git commit -m 'fix: use Tag categories as primary sidebar navigation'
             git push origin HEAD:fix/tray-lifecycle-2.4.1
           fi
