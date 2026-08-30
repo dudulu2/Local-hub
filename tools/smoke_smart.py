@@ -94,6 +94,7 @@ def main() -> None:
         lesson_index = folder_paths.index("Videos/上课")
         asia_index = folder_paths.index("亚洲")
         assert videos_index < lesson_index < asia_index, folder_paths
+        assert catalog.stats()["videos"] == 20
 
         # A manual refresh is also used after LocalHub rename/move operations.
         # Path changes from those workflows must not look like newly copied media.
@@ -102,7 +103,7 @@ def main() -> None:
         manual_view = catalog.list_view("new", limit=30)
         assert manual_view["total"] == 1, manual_view
         assert all(item["id"] != "manual-only.mp4" for item in manual_view["items"])
-        assert catalog.stats()["videos"] == 19
+        assert catalog.stats()["videos"] == 21
 
         # Re-polling does not duplicate the same discovery.
         catalog.last_change_check = 0.0
