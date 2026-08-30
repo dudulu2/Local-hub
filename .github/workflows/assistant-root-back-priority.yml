@@ -1,0 +1,44 @@
+name: Fix root page back priority
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-root-back-priority.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Patch root navigation precedence
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('v23_features.js')
+          text = path.read_text('utf-8')
+          old = '''    if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;\n    else if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';\n    else if (title) currentFolder = title;\n'''
+          new = '''    // A root-level page wins over stale folder-nav selection. AI/Tag/etc. may\n    // be opened while a folder remains highlighted in the sidebar, but their\n    // Back action must still return Home rather than climb that old folder.\n    if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';\n    else if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;\n    else if (title) currentFolder = title;\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'A root-level page wins over stale folder-nav selection' not in text:
+              raise SystemExit('root navigation anchor changed')
+          path.write_text(text, 'utf-8')
+          PY
+          node --check v23_features.js
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add v23_features.js
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+          else
+            git commit -m 'fix: make root-level back return home'
+            git push origin HEAD:fix/tray-lifecycle-2.4.1
+          fi
