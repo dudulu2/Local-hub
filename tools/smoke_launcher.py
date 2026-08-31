@@ -154,6 +154,7 @@ with TemporaryDirectory() as tmp:
         assert "object-src 'none'" in csp and "frame-src 'none'" in csp, "browser embedding policy is too permissive"
         assert "camera=()" in permissions and "microphone=()" in permissions, "browser device permissions are not disabled"
         assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"
+        assert "/ai_tag_live_sync.js" in html, "AI Tag live-sync asset is not injected"
         assert "/ai_first_run.js" in html and "/ai_first_run.css" in html, "AI first-run assets are not injected"
         assert 'id="tagCategoryNav"' in html and "Tag / 分类" in html, "Tag/category sidebar entry is missing"
         assert '<button data-route="packs"><span>▦</span>图包 / 图册</button>' not in html, "legacy image-pack sidebar entry returned"
@@ -177,5 +178,10 @@ with TemporaryDirectory() as tmp:
         thread.join(timeout=2.0)
         httpd.server_close()
 
+
+
+from ai_tag_sync_support import AITagReconciler
+_test_settings = {"groups": [{"id":"all","enabled":True,"tags":[{"tag":"室内"},{"tag":"户外"},{"tag":"夜晚"}]}]}
+assert AITagReconciler._select([("室内",0.31),("户外",0.27),("夜晚",0.25)], _test_settings), "AI Tag selector returned an empty result for a separated group"
 
 print("launcher lifecycle, backend/browser privacy, offline onboarding, Tag navigation, and balanced AI smoke test passed")

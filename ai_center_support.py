@@ -288,6 +288,7 @@ def install(server_module, auto_tag_support_module, siglip_support_module) -> No
             "</body>",
             '  <script src="/auto_tag_ui.js"></script>\n'
             '  <script src="/playback_stability.js"></script>\n'
+            '  <script src="/ai_tag_live_sync.js"></script>\n'
             '  <script src="/ai_center.js"></script>\n</body>',
             1,
         ).encode("utf-8")

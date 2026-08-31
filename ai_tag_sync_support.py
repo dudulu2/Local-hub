@@ -167,6 +167,19 @@ class AITagReconciler:
         if not text_vectors:
             return None
 
+        required_keys = {
+            str(row.get("tag", "")).strip().casefold()
+            for group in settings.get("groups", [])
+            if isinstance(group, dict) and group.get("enabled")
+            for row in (group.get("tags", []) if isinstance(group.get("tags"), list) else [])
+            if isinstance(row, dict) and str(row.get("tag", "")).strip()
+        }
+        available_keys = {str(tag).strip().casefold() for tag in text_vectors}
+        if required_keys:
+            coverage = len(required_keys & available_keys) / max(1, len(required_keys))
+            if coverage < 0.97:
+                return None
+
         try:
             frames = [row[2] for row in self.manager.index.frame_vectors(path) if row[2]]
             if not frames:
@@ -195,18 +208,13 @@ class AITagReconciler:
 
     @staticmethod
     def _select(scored: list[tuple[str, float]], settings: dict) -> list[str]:
-        """Choose tags inside their semantic group instead of one global race.
-
-        A 190-tag vocabulary is useful only if unrelated concepts do not steal
-        each other's slots.  Each enabled group gets its own robust distribution
-        and must show real separation from that group's median/runner-up.  Weak
-        groups are allowed to emit nothing; this is intentionally precision-first.
-        """
+        """Select precise tags per semantic group, with a tiny usable fallback."""
         if not scored:
             return []
         score_map = {str(tag).casefold(): (str(tag), float(score)) for tag, score in scored}
         selected: list[str] = []
         selected_keys: set[str] = set()
+        fallback_groups: list[tuple[str, list[tuple[str, float]], float, float]] = []
 
         for group in settings.get("groups", []):
             if not isinstance(group, dict) or not group.get("enabled"):
@@ -229,28 +237,37 @@ class AITagReconciler:
             runner = candidates[1][1]
             best_lift = best - median
             gap = best - runner
+            group_id = str(group.get("id", ""))
+            fallback_groups.append((group_id, candidates, best_lift, spread))
 
-            # Flat distributions mean SigLIP does not really know which label is
-            # better.  Do not force a tag just because every group has a winner.
-            min_lift = max(0.006, spread * 0.72)
-            min_gap = max(0.0022, spread * 0.12)
-            if best_lift < min_lift or (gap < min_gap and best_lift < max(0.012, spread * 1.35)):
+            min_lift = max(0.0030, spread * 0.42)
+            min_gap = max(0.0010, spread * 0.065)
+            strong = best_lift >= min_lift and (gap >= min_gap or best_lift >= max(0.0075, spread * 0.82))
+            if not strong:
                 continue
 
-            group_id = str(group.get("id", ""))
-            max_tags = 5 if group_id == "all" else 2
-            cutoff = max(median + max(0.0045, spread * 0.62), best - (0.024 if group_id == "all" else 0.016))
+            max_tags = 4 if group_id == "all" else 2
+            cutoff = max(median + max(0.0025, spread * 0.36), best - (0.020 if group_id == "all" else 0.012))
+            emitted = 0
             for tag, score in candidates:
-                if len([x for x in selected if x.casefold() in {r[0].casefold() for r in candidates}]) >= max_tags:
-                    break
-                if score < cutoff:
+                if emitted >= max_tags or score < cutoff:
                     break
                 key = tag.casefold()
-                if key not in selected_keys:
-                    selected_keys.add(key)
-                    selected.append(tag)
+                if key in selected_keys:
+                    continue
+                selected_keys.add(key)
+                selected.append(tag)
+                emitted += 1
 
-        return selected[:12]
+        if selected:
+            return selected[:12]
+
+        usable = [row for row in fallback_groups if row[1]]
+        if not usable:
+            return []
+        usable.sort(key=lambda row: (row[0] == "all", row[2] / max(0.001, row[3])), reverse=True)
+        _, candidates, _, _ = usable[0]
+        return [candidates[0][0]] if candidates else []
 
     def _publish_catalog_tags(self, path: str, tags: list[str]) -> None:
         catalog = getattr(self.store, "_smart_catalog", None)
@@ -380,6 +397,24 @@ def install(server_module, auto_tag_support_module, ai_center_support_module) ->
         reconciler = AITagReconciler(self, store, assignments, raw_set_tags)
         self._ai_tag_reconciler = reconciler
         store._ai_tag_reconciler = reconciler
+
+        def reconcile_existing_index():
+            for _ in range(50):
+                if self.stop.wait(0.20):
+                    return
+                settings_store = getattr(store, "_ai_settings_store", None)
+                if settings_store is None:
+                    continue
+                try:
+                    settings = settings_store.snapshot()
+                    if settings.get("aiOptIn", False):
+                        reconciler.reconcile_all()
+                except Exception as exc:
+                    with reconciler.lock:
+                        reconciler.last_error = f"startup reconcile: {exc}"
+                return
+
+        threading.Thread(target=reconcile_existing_index, name="LocalHubAITagStartupSync", daemon=True).start()
 
     def analyze_and_tag(self, relative: str):
         outcome = original_analyze(self, relative)

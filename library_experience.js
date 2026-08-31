@@ -246,7 +246,7 @@
       const tags = await loadTagSummary();
       if (!tagViewActive || token !== tagRenderToken) return;
       if (!tags.length) {
-        grid.innerHTML = '<div class="tag-category-empty"><strong>还没有标签</strong><span>给视频添加 Tag，或接受 AI Tag 后会自动出现在这里。</span></div>';
+        grid.innerHTML = '<div class="tag-category-empty"><strong>还没有标签</strong><span>手工添加 Tag，或等待 AI 分析完成后会自动出现在这里。</span></div>';
         if (meta) meta.textContent = '';
         return;
       }
@@ -296,6 +296,7 @@
   window.addEventListener('localhub:ai-tags-updated', () => {
     tagCache = null;
     tagCacheAt = 0;
+    if (tagViewActive) renderTagOverview();
   });
 
   function ensureNotice() {
