@@ -270,9 +270,9 @@ def upgrade_settings(raw: dict | None) -> dict:
         version = int(source.get("version", 0) or 0)
     except (TypeError, ValueError):
         version = 0
-    if version >= 2:
-        return source
-
+    # Early 2.x builds already wrote version=2 while still using the
+    # starter taxonomy. Always reconcile built-in groups so existing libraries
+    # receive the professional >=20-tag baseline while preserving choices.
     old_groups = source.get("groups") if isinstance(source.get("groups"), list) else []
     old_by_id = {str(row.get("id", "")): row for row in old_groups if isinstance(row, dict)}
     upgraded = []

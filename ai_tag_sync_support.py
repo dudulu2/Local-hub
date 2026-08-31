@@ -178,6 +178,12 @@ class AITagReconciler:
         if required_keys:
             coverage = len(required_keys & available_keys) / max(1, len(required_keys))
             if coverage < 0.97:
+                try:
+                    warmer = getattr(self.manager, "_start_siglip_prompt_warmup", None)
+                    if callable(warmer):
+                        warmer()
+                except Exception:
+                    pass
                 return None
 
         try:

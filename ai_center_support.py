@@ -261,6 +261,15 @@ def _total_videos(store) -> int:
         return 0
 
 
+def _tagged_videos(store) -> int:
+    try:
+        with store.lock:
+            items = dict(store._metadata.get("items", {}))
+        return sum(1 for row in items.values() if isinstance(row, dict) and isinstance(row.get("tags"), list) and row.get("tags"))
+    except Exception:
+        return 0
+
+
 def _semantic_indexed(manager, siglip_support_module) -> int:
     try:
         from siglip_encoder import ENCODER_NAME
@@ -312,6 +321,8 @@ def install(server_module, auto_tag_support_module, siglip_support_module) -> No
                 if manager.stop.wait(6.0):
                     return
                 settings = settings_store.snapshot()
+                if not settings.get("aiOptIn", False):
+                    return
                 if not settings.get("autoAnalyzeLibrary", True):
                     return
                 for _ in range(40):
@@ -340,6 +351,8 @@ def install(server_module, auto_tag_support_module, siglip_support_module) -> No
                     return {"ok": False, "error": "AI 尚未初始化"}
                 status = manager.status()
                 model = _model_status(manager)
+                reconciler = getattr(store, "_ai_tag_reconciler", None)
+                tag_sync = reconciler.status(0) if reconciler is not None else {"ok": True, "revision": 0, "changed": [], "syncRunning": False, "syncTotal": 0, "syncDone": 0, "queued": 0, "lastError": ""}
                 return {
                     "ok": True,
                     "settings": settings_store.snapshot(),
@@ -347,6 +360,8 @@ def install(server_module, auto_tag_support_module, siglip_support_module) -> No
                     "model": model,
                     "totalVideos": _total_videos(store),
                     "semanticIndexed": _semantic_indexed(manager, siglip_support_module),
+                    "taggedVideos": _tagged_videos(store),
+                    "tagSync": tag_sync,
                 }
 
             def do_GET(self):
@@ -382,8 +397,10 @@ def install(server_module, auto_tag_support_module, siglip_support_module) -> No
                         raise ValueError("未知 AI 设置操作")
                     saved = _apply_settings(manager, settings_store, siglip_support_module)
                     model = _model_status(manager)
-                    if saved.get("autoAnalyzeLibrary", True) and model.get("installed"):
+                    if saved.get("aiOptIn", False) and saved.get("autoAnalyzeLibrary", True) and model.get("installed"):
                         manager.start_library()
+                    elif not saved.get("aiOptIn", False):
+                        manager.pause_library()
                     return self._ai_json({"ok": True, "settings": saved, "model": _model_status(manager)})
                 except (ValueError, OSError) as exc:
                     return self._ai_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)

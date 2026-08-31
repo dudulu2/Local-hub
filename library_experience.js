@@ -246,7 +246,15 @@
       const tags = await loadTagSummary();
       if (!tagViewActive || token !== tagRenderToken) return;
       if (!tags.length) {
-        grid.innerHTML = '<div class="tag-category-empty"><strong>还没有标签</strong><span>手工添加 Tag，或等待 AI 分析完成后会自动出现在这里。</span></div>';
+        let sync = null;
+        try {
+          const response = await fetch('/api/ai/tag-sync?since=0', {cache:'no-store'});
+          if (response.ok) sync = await response.json();
+        } catch {}
+        const total = Math.max(0, Number(sync?.syncTotal) || 0);
+        const done = Math.max(0, Number(sync?.syncDone) || 0);
+        const message = sync?.syncRunning ? `AI 正在自动生成标签 ${done} / ${total || '…'}，无需逐个视频确认。` : 'AI Tag 会自动写入视频；刚升级词库时会直接利用已有视觉索引重新分类。';
+        grid.innerHTML = `<div class="tag-category-empty"><strong>${sync?.syncRunning ? '正在生成标签' : '还没有标签'}</strong><span>${message}</span></div>`;
         if (meta) meta.textContent = '';
         return;
       }

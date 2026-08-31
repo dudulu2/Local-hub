@@ -149,7 +149,7 @@
   }
 
   function renderAiPage(overview) {
-    if (!aiPageActive) return;
+    if (!aiPageActive || (pageTitle?.textContent || '').trim() !== 'AI 分析') return;
     const status = overview.status || {};
     const model = overview.model || status.model || {};
     const settings = overview.settings || {};
@@ -158,6 +158,10 @@
     const percent = progressPercent(overview);
     const queued = Math.max(0, Number(status.queued) || 0);
     const failed = Math.max(0, Number(status.failed) || 0);
+    const tagged = Math.max(0, Number(overview.taggedVideos) || 0);
+    const tagSync = overview.tagSync || {};
+    const tagSyncTotal = Math.max(0, Number(tagSync.syncTotal) || 0);
+    const tagSyncDone = Math.max(0, Number(tagSync.syncDone) || 0);
     const current = String(status.current || '');
     const running = !!status.libraryRunning;
     const playing = !!status.io?.playing;
@@ -187,7 +191,7 @@
         <div class="ai-stats">
           <div class="ai-stat"><strong>${indexed}</strong><span>已建立 AI 索引</span></div>
           <div class="ai-stat"><strong>${total}</strong><span>媒体库视频</span></div>
-          <div class="ai-stat"><strong>${queued}</strong><span>等待分析</span></div>
+          <div class="ai-stat"><strong>${tagged}</strong><span>已生成 Tag</span></div>
           <div class="ai-stat"><strong>${failed}</strong><span>本轮失败</span></div>
         </div>
 
@@ -195,6 +199,7 @@
           <div class="ai-section-head"><h3>全库进度</h3><span>${modeText}</span></div>
           <div class="ai-progress-track"><i style="width:${percent.toFixed(1)}%"></i></div>
           <div class="ai-progress-meta"><span>${indexed} / ${total} 个视频</span><span>${percent.toFixed(1)}%</span></div>
+          <div class="ai-progress-meta ai-tag-sync-meta"><span>自动 Tag：${tagSync.syncRunning ? `正在重分类 ${tagSyncDone} / ${tagSyncTotal || total}` : `${tagged} 个视频已有标签`}</span><span>${tagSync.queued ? `队列 ${tagSync.queued}` : ""}</span></div>
         </div>
 
         <div class="ai-current-card">
@@ -335,7 +340,7 @@
       const score = Number(item.score ?? item.confidence ?? 0);
       return `<span class="viewer-ai-chip"><button data-viewer-ai-accept="${encodeURIComponent(item.tag)}">＋ #${escapeHtml(item.tag)}</button><small>${Number.isFinite(score) ? score.toFixed(3) : ''}</small><button class="reject" data-viewer-ai-reject="${encodeURIComponent(item.tag)}">×</button></span>`;
     }).join('');
-    body.innerHTML = `<div class="viewer-ai-state">${status?.io?.playing ? '播放中使用低负载结果 · ' : ''}点击 ＋ 接受 Tag，× 表示不符合。</div><div class="viewer-ai-suggestions">${chips}</div><div class="viewer-ai-actions"><button class="ai-btn" data-viewer-ai-action="center">打开 AI 页面</button></div>`;
+    body.innerHTML = `<div class="viewer-ai-state">${status?.io?.playing ? '播放中使用低负载结果 · ' : ''}高置信 AI Tag 会自动写入视频；这里仅是额外候选，可用 ＋ 补充或 × 排除。</div><div class="viewer-ai-suggestions">${chips}</div><div class="viewer-ai-actions"><button class="ai-btn" data-viewer-ai-action="center">打开 AI 页面</button></div>`;
   }
 
   async function refreshViewerAi({poll = false} = {}) {
@@ -628,6 +633,9 @@
     if (main && main.id !== 'aiCenterNav') leaveAiPage();
   }, true);
   searchInput?.addEventListener('input', () => leaveAiPage(), true);
+  if (pageTitle) new MutationObserver(() => {
+    if (aiPageActive && (pageTitle.textContent || '').trim() !== 'AI 分析') leaveAiPage();
+  }).observe(pageTitle, {subtree:true, childList:true, characterData:true});
   viewer?.addEventListener('close', () => {
     clearTimeout(viewerPollTimer);
     $('#viewerAiPopover')?.classList.add('hidden');

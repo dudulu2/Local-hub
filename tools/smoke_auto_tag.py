@@ -132,6 +132,16 @@ def main() -> None:
     # Professional built-ins all have enough semantic granularity for a useful
     # within-group competition. Old v1 settings upgrade without losing opt-ins.
     assert all(len(group["tags"]) >= 20 for group in ai_taxonomy_v2.PROFESSIONAL_GROUPS)
+    legacy_sparse_v2 = ai_settings_support.normalize_settings({
+        "version": 2, "aiOptIn": True, "autoAnalyzeLibrary": True,
+        "groups": [
+            {"id":"all", "name":"全部视频", "enabled":True, "tags":[{"tag":f"旧基础{i}", "prompts":[f"legacy base {i}"]} for i in range(8)]},
+            {"id":"study", "name":"学习", "enabled":True, "tags":[{"tag":f"旧学习{i}", "prompts":[f"legacy study {i}"]} for i in range(7)]},
+        ],
+    })
+    legacy_builtin = {g["id"]: g for g in legacy_sparse_v2["groups"] if g.get("id") in {row["id"] for row in ai_taxonomy_v2.PROFESSIONAL_GROUPS}}
+    assert len(legacy_builtin["study"]["tags"]) >= 20
+    assert all(len(group["tags"]) >= 20 for group in legacy_builtin.values())
     migrated = ai_settings_support.normalize_settings({
         "version": 1,
         "aiOptIn": True,

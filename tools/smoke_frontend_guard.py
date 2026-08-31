@@ -30,6 +30,11 @@ assert "back.title = hasFolderParent ? '返回上级文件夹' : '返回首页';
 assert "back.setAttribute('aria-hidden','true');" in features
 assert "back.tabIndex = -1;" in features
 assert "Never leave a legacy root button" in features
+
+ai_center = (ROOT / "ai_center.js").read_text("utf-8")
+library_experience = (ROOT / "library_experience.js").read_text("utf-8")
+assert "高置信 AI Tag 会自动写入视频" in ai_center
+assert "AI 正在自动生成标签" in library_experience
 assert "$$('.main-nav button[data-route=\"root\"]').forEach(node => node.remove());" in features
 
 # AI-managed Tag changes are pushed into visible cards/player without requiring
