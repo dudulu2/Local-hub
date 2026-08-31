@@ -8,7 +8,7 @@
 
 **Local-first · Local AI tagging · Media wall · Local recommendations · Playback & organization · Single Windows EXE**
 
-[中文](README.md) · [Download latest](../../releases/latest) · [Release notes](RELEASE_NOTES.md)
+[中文](README.md) · [Standard EXE](../../releases/latest/download/LocalHub.exe) · [LocalHub with AI](../../releases/latest/download/LocalHub-with-AI.zip) · [Release notes](RELEASE_NOTES.md)
 
 [![Version](https://img.shields.io/badge/stable-2.4.0-f59e0b)](../../releases/latest)
 ![Windows](https://img.shields.io/badge/Windows-x64-222222)
@@ -18,6 +18,17 @@
 </div>
 
 ![LocalHub home](docs/images/home.webp)
+
+## Downloads
+
+| Edition | Best for | Package |
+|---|---|---|
+| **LocalHub Standard** | Try the media library first and enable AI only when you want it | `LocalHub.exe`, about 75MB; the AI model can be downloaded later |
+| **LocalHub with AI** | Download everything once and use the local AI model without a second model download | `LocalHub-with-AI.zip`, containing LocalHub plus the ~206MB SigLIP INT8 local model |
+
+**Using LocalHub with AI:** extract the ZIP and double-click `LocalHub with AI.cmd`. On first launch, the bundled model is copied to the current Windows user's LocalHub model directory. Future launches can use the model without downloading it again.
+
+> Both editions use the same LocalHub application. `with AI` simply bundles the pinned local model for easier offline preparation and one-package distribution.
 
 ## Your library should be more than filenames
 
@@ -55,12 +66,13 @@ covers · tags · search · favorites · continue watching · local recommendati
 
 The AI Tag workflow is designed to stay local:
 
-- the optional lightweight model is downloaded separately (around 200MB; size may change);
+- the lightweight model is about 206MB and uses SigLIP Base Patch16-224 INT8 ONNX;
+- Standard can download the model later, while `LocalHub with AI` already includes it;
 - recognition and tag matching run on your PC;
 - a high-end GPU is not a requirement;
 - generated tags are stored in LocalHub's local metadata.
 
-> You obviously need a network connection to download the app or optional model. **Using LocalHub to manage and analyze your own media does not require uploading that media to a remote service.**
+> A network connection may be needed to download the app or optional model. If you use the `LocalHub with AI` bundle, the model itself is already included. **Managing and analyzing your own media does not require uploading that media to a remote service.**
 
 ### Playback, tags, favorites and recommendations in one place
 
@@ -77,9 +89,17 @@ On the playback page you can:
 
 ## Start in 3 steps
 
-1. Download `LocalHub.exe` from [Releases](../../releases/latest).
+**Standard:**
+
+1. Download `LocalHub.exe`.
 2. Put the EXE in the root of your media library.
 3. Double-click it. LocalHub opens the local web interface automatically.
+
+**LocalHub with AI:**
+
+1. Download and extract `LocalHub-with-AI.zip`.
+2. Put the extracted folder wherever you want to keep it.
+3. Double-click `LocalHub with AI.cmd`. On first launch it installs the bundled local AI model and starts LocalHub.
 
 ```text
 Your library/
@@ -168,7 +188,7 @@ Official releases include a SHA256 file for integrity verification.
 
 ## For developers
 
-Normal users only need the Windows EXE from Releases.
+Normal users can use either the Windows EXE from Releases or the model-bundled `LocalHub-with-AI.zip`.
 
 Build from source:
 
@@ -188,6 +208,6 @@ The source is visible here for security review, learning and improvement proposa
 
 **Your files. Your library. Your machine.**
 
-[Download latest](../../releases/latest) · [中文 README](README.md)
+[Standard EXE](../../releases/latest/download/LocalHub.exe) · [LocalHub with AI](../../releases/latest/download/LocalHub-with-AI.zip) · [中文 README](README.md)
 
 </div>
