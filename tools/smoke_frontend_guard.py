@@ -78,3 +78,19 @@ assert "video.currentTime = target" in player_fix
 assert "}, 8000);" in player_fix
 
 print("frontend interaction guard smoke test passed")
+# Tag classification frequency cloud regression guard
+library = (ROOT / "library_experience.js").read_text("utf-8")
+library_css = (ROOT / "library_experience.css").read_text("utf-8")
+ai_center = (ROOT / "ai_center.js").read_text("utf-8")
+smart_ui = (ROOT / "smart_ui.js").read_text("utf-8")
+smart_mode = (ROOT / "smart_mode.py").read_text("utf-8")
+assert "按出现频率排序" in library
+assert "tag-frequency-cloud" in library
+assert "tag-weight-4" in library_css
+assert "grid.dataset.pageOwner = 'tags'" in library
+assert "grid.dataset.pageOwner = 'ai'" in ai_center
+assert "grid.dataset.pageOwner !== 'ai'" in ai_center
+assert "localhub:route-change" in library and "localhub:route-change" in ai_center
+assert "localhub:open-tag" in library and "loadExactTag" in smart_ui
+assert 'elif view == "tag":' in smart_mode
+assert "display:flex!important;flex-wrap:wrap!important" in library_css

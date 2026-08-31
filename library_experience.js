@@ -14,7 +14,7 @@
   const pageTitle = document.querySelector('#pageTitle');
   const search = document.querySelector('#searchInput');
   const rescan = document.querySelector('#rescanBtn');
-  const tagNav = document.querySelector('.main-nav button[data-route="packs"]');
+  const tagNav = document.querySelector('#tagCategoryNav, .main-nav button[data-route="tags"], .main-nav button[data-route="packs"]');
   if (!folderNav) return;
 
   if (tagNav) {
@@ -189,7 +189,8 @@
     if (!tagViewActive) return;
     tagViewActive = false;
     tagRenderToken++;
-    grid?.classList.remove('tag-category-grid');
+    grid?.classList.remove('tag-category-grid', 'tag-frequency-cloud');
+    if (grid?.dataset.pageOwner === 'tags') delete grid.dataset.pageOwner;
   }
 
   async function loadTagSummary(force = false) {
@@ -233,12 +234,15 @@
     if (!tagNav || !grid) return;
     const token = ++tagRenderToken;
     tagViewActive = true;
+    window.dispatchEvent(new CustomEvent('localhub:route-change', {detail:{route:'tags'}}));
     activateTagNav();
-    grid.classList.add('tag-category-grid');
+    grid.dataset.pageOwner = 'tags';
+    grid.classList.remove('ai-center-grid');
+    grid.classList.add('tag-category-grid', 'tag-frequency-cloud');
     grid.innerHTML = '<div class="tag-category-loading">正在整理标签…</div>';
     if (pager) pager.classList.add('hidden');
     if (empty) empty.classList.add('hidden');
-    if (pageTitle) pageTitle.textContent = 'Tag / 分类';
+    if (pageTitle) pageTitle.textContent = '标签分类';
     if (meta) meta.textContent = '';
     if (hint) hint.textContent = '';
 
@@ -258,8 +262,16 @@
         if (meta) meta.textContent = '';
         return;
       }
-      grid.innerHTML = tags.map(tag => `<button type="button" class="tag-category-card" data-category-tag="${escapeHtml(tag.name)}"><span class="tag-category-name"># ${escapeHtml(tag.name)}</span><small>${tag.count} 个视频</small></button>`).join('');
-      if (meta) meta.textContent = `共 ${tags.length} 个标签`;
+      const maxCount = Math.max(1, Number(tags[0]?.count) || 1);
+      const minCount = Math.max(0, Number(tags[tags.length - 1]?.count) || 0);
+      const span = Math.max(1, maxCount - minCount);
+      grid.innerHTML = tags.map((tag, index) => {
+        const count = Math.max(0, Number(tag.count) || 0);
+        const strength = (count - minCount) / span;
+        const weight = index < 6 || strength >= .72 ? 4 : index < 16 || strength >= .45 ? 3 : strength >= .20 ? 2 : 1;
+        return `<button type="button" class="tag-category-card tag-weight-${weight}" data-category-tag="${escapeHtml(tag.name)}" title="#${escapeHtml(tag.name)} · ${count} 个视频"><span class="tag-category-name">#${escapeHtml(tag.name)}</span><small>${count}</small></button>`;
+      }).join('');
+      if (meta) meta.textContent = `共 ${tags.length} 个标签 · 按出现频率排序`;
     } catch {
       if (!tagViewActive || token !== tagRenderToken) return;
       grid.innerHTML = '<div class="tag-category-empty"><strong>标签读取失败</strong><span>稍后再试，不影响视频浏览。</span></div>';
@@ -280,11 +292,9 @@
       event.preventDefault();
       const tag = category.dataset.categoryTag || '';
       leaveTagView();
-      if (search) {
-        search.value = tag;
-        search.dispatchEvent(new Event('input', {bubbles:true}));
-        setTimeout(() => tagNav?.classList.add('active'), 320);
-      }
+      if (search) search.value = '';
+      window.dispatchEvent(new CustomEvent('localhub:open-tag', {detail:{tag}}));
+      setTimeout(() => tagNav?.classList.add('active'), 80);
       return;
     }
 

@@ -274,6 +274,14 @@
   }
   function openFolder(folder){state.folder=folder;state.query='';el.search.value='';loadList('folder',{offset:0}).catch(e=>toast(e.message));}
   function searchNow(q){const t=String(q||'').trim();if(!t)return loadHome().catch(e=>toast(e.message));state.query=t;state.folder='';loadList('search',{offset:0}).catch(e=>toast(e.message));}
+  async function loadExactTag(tag,{offset=0}={}){
+    const clean=String(tag||'').trim();if(!clean)return;
+    const token=++state.requestToken;state.route='tag';state.folder='';state.query=clean;state.offset=Math.max(0,offset);state.clientIds=[];
+    const d=await api(`/api/smart/list?view=tag&q=${encodeURIComponent(clean)}&offset=${state.offset}&limit=${PAGE_SIZE}`);if(token!==state.requestToken)return;
+    state.items=d.items||[];state.total=Number(d.total)||0;state.hasMore=!!d.hasMore;el.title.textContent=`#${clean}`;el.meta.textContent=`${state.total} 个视频`;el.hint.textContent='';
+    $$('.main-nav button').forEach(b=>b.classList.toggle('active',b.id==='tagCategoryNav'||b.dataset.route==='tags'));renderFull();scrollTopFast();
+  }
+  window.addEventListener('localhub:open-tag',event=>loadExactTag(event.detail?.tag||'',{offset:0}).catch(e=>toast(e.message)));
 
   async function loadClientSubset(kind,{offset=0}={}){
     state.route=kind;state.folder='';state.query='';state.offset=Math.max(0,offset);navActive(kind);
@@ -282,7 +290,7 @@
     if(!state.total){state.items=[];renderFull();return;}
     const ids=state.clientIds.slice(state.offset,state.offset+PAGE_SIZE);const d=await api(`/api/smart/by-ids?ids=${encodeURIComponent(ids.join('\n'))}`);state.items=d.items||[];renderFull();scrollTopFast();
   }
-  function changePage(delta){const pageSize=state.route==='home'?HOME_PAGE_SIZE:PAGE_SIZE;const next=Math.max(0,state.offset+delta*pageSize);if(next===state.offset)return;if(state.route==='home')loadHome({offset:next,keepSeed:true}).catch(e=>toast(e.message));else if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));}
+  function changePage(delta){const pageSize=state.route==='home'?HOME_PAGE_SIZE:PAGE_SIZE;const next=Math.max(0,state.offset+delta*pageSize);if(next===state.offset)return;if(state.route==='home')loadHome({offset:next,keepSeed:true}).catch(e=>toast(e.message));else if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else if(state.route==='tag')loadExactTag(state.query,{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));}
 
   function toggleFavorite(id){state.favorites.has(id)?state.favorites.delete(id):state.favorites.add(id);state.clientIds=[];saveFav();if(state.current?.id===id)updateViewerFav();}
   function updateViewerFav(){el.favorite.textContent=state.current&&state.favorites.has(state.current.id)?'★ 已收藏':'☆ 收藏';}

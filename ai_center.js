@@ -149,7 +149,7 @@
   }
 
   function renderAiPage(overview) {
-    if (!aiPageActive || (pageTitle?.textContent || '').trim() !== 'AI 分析') return;
+    if (!aiPageActive || grid.dataset.pageOwner !== 'ai' || (pageTitle?.textContent || '').trim() !== 'AI 分析') return;
     const status = overview.status || {};
     const model = overview.model || status.model || {};
     const settings = overview.settings || {};
@@ -224,14 +224,19 @@
     try {
       renderAiPage(await getOverview());
     } catch (error) {
-      grid.innerHTML = `<section class="ai-center-page"><div class="ai-current-card"><h3>AI 状态读取失败</h3><p class="ai-muted">${escapeHtml(error.message || error)}</p></div></section>`;
+      if (aiPageActive && grid.dataset.pageOwner === 'ai' && (pageTitle?.textContent || '').trim() === 'AI 分析') {
+        grid.innerHTML = `<section class="ai-center-page"><div class="ai-current-card"><h3>AI 状态读取失败</h3><p class="ai-muted">${escapeHtml(error.message || error)}</p></div></section>`;
+      }
     }
     if (aiPageActive) aiPollTimer = setTimeout(refreshAiPage, 1400);
   }
 
   function openAiCenter() {
+    window.dispatchEvent(new CustomEvent('localhub:route-change', {detail:{route:'ai-center'}}));
     aiPageActive = true;
     setAiNavActive();
+    grid.dataset.pageOwner = 'ai';
+    grid.classList.remove('tag-category-grid', 'tag-frequency-cloud');
     grid.classList.add('ai-center-grid');
     pageTitle.textContent = 'AI 分析';
     if (pageMeta) pageMeta.textContent = '';
@@ -633,6 +638,9 @@
     if (main && main.id !== 'aiCenterNav') leaveAiPage();
   }, true);
   searchInput?.addEventListener('input', () => leaveAiPage(), true);
+  window.addEventListener('localhub:route-change', event => {
+    if (event.detail?.route !== 'ai-center') leaveAiPage();
+  });
   if (pageTitle) new MutationObserver(() => {
     if (aiPageActive && (pageTitle.textContent || '').trim() !== 'AI 分析') leaveAiPage();
   }).observe(pageTitle, {subtree:true, childList:true, characterData:true});

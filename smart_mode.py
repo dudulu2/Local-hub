@@ -375,6 +375,18 @@ class Catalog:
                     rows.append(_pack_public(path, images))
             rows.sort(key=lambda row: row.get("modified", 0), reverse=True)
             title = "图包 / 图册"
+        elif view == "tag":
+            needle = q.strip().casefold()
+            with self.lock:
+                matches = [
+                    item for item in self.items
+                    if item.get("type") == "video"
+                    and needle
+                    and any(str(value).strip().casefold() == needle for value in (item.get("tags") or []))
+                ]
+            matches.sort(key=lambda item: item.get("modified", 0), reverse=True)
+            rows = [_media_public(item) for item in matches]
+            title = f"#{q}"
         elif view == "search":
             needle = q.strip().casefold()
             with self.lock:
