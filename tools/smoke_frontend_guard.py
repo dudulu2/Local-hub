@@ -22,7 +22,10 @@ assert "attributeFilter:['disabled']" in html
 assert "A root-level page wins over stale folder-nav selection" in features
 assert "if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';" in features
 assert "$('#brandBtn')?.click();" in features
-assert "back.title = folder ? '返回上级文件夹' : '返回首页';" in features
+assert "const hasFolderParent = folderParts.length > 1;" in features
+assert "const show = hasFolderParent || isRootFunctionPage;" in features
+assert "back.title = hasFolderParent ? '返回上级文件夹' : '返回首页';" in features
+assert "Never leave a legacy root button" in features
 
 # AI-managed Tag changes are pushed into visible cards/player without requiring
 # an F5 refresh. The category page receives an invalidation event separately.

@@ -66,6 +66,10 @@
     const title = $('#pageTitle');
     if (!headingLeft || !title) return;
     headingLeft.classList.add('v23-heading-left');
+    // Root-directory navigation is not an action: Home already represents that
+    // state. Never leave a legacy root button that looks clickable but has no
+    // meaningful destination.
+    $$('.main-nav button[data-route="root"]').forEach(node => node.remove());
     if (!$('#folderBackBtn')) {
       const back = document.createElement('button');
       back.id = 'folderBackBtn'; back.className = 'v23-icon-btn v23-back hidden'; back.type = 'button';
@@ -114,9 +118,21 @@
     const back = $('#folderBackBtn'); if (!back) return;
     const title = ($('#pageTitle')?.textContent || '').trim();
     const folder = resolveCurrentFolder();
-    const show = !!title && title !== '首页';
+    const folderParts = String(folder || '').replace(/\\/g,'/').split('/').filter(Boolean);
+    const hasFolderParent = folderParts.length > 1;
+    const isRootFunctionPage = !folder && !!title && title !== '首页' && title !== '根目录';
+    const show = hasFolderParent || isRootFunctionPage;
     back.classList.toggle('hidden', !show);
-    back.title = folder ? '返回上级文件夹' : '返回首页';
+    if (!show) {
+      back.removeAttribute('title');
+      back.removeAttribute('aria-label');
+      back.setAttribute('aria-hidden','true');
+      back.tabIndex = -1;
+      return;
+    }
+    back.removeAttribute('aria-hidden');
+    back.tabIndex = 0;
+    back.title = hasFolderParent ? '返回上级文件夹' : '返回首页';
     back.setAttribute('aria-label', back.title);
   }
 
