@@ -1,4 +1,4 @@
-name: Fix root page back priority
+name: Fix actionable root and folder back controls
 
 on:
   push:
@@ -17,28 +17,50 @@ jobs:
         with:
           ref: fix/tray-lifecycle-2.4.1
           fetch-depth: 0
-      - name: Patch root navigation precedence
+      - name: Patch actionable navigation controls
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+
           path = Path('v23_features.js')
           text = path.read_text('utf-8')
-          old = '''    if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;\n    else if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';\n    else if (title) currentFolder = title;\n'''
-          new = '''    // A root-level page wins over stale folder-nav selection. AI/Tag/etc. may\n    // be opened while a folder remains highlighted in the sidebar, but their\n    // Back action must still return Home rather than climb that old folder.\n    if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';\n    else if (activeFolder?.dataset.folder != null) currentFolder = activeFolder.dataset.folder;\n    else if (title) currentFolder = title;\n'''
+
+          anchor = """    headingLeft.classList.add('v23-heading-left');\n    if (!$('#folderBackBtn')) {\n"""
+          replacement = """    headingLeft.classList.add('v23-heading-left');\n    // Root-directory navigation is not an action: Home already represents that\n    // state. Never leave a legacy root button that looks clickable but has no\n    // meaningful destination.\n    $$('.main-nav button[data-route=\"root\"]').forEach(node => node.remove());\n    if (!$('#folderBackBtn')) {\n"""
+          if anchor in text and 'Never leave a legacy root button' not in text:
+              text = text.replace(anchor, replacement, 1)
+
+          old = """  function updateBackButton() {\n    const back = $('#folderBackBtn'); if (!back) return;\n    const title = ($('#pageTitle')?.textContent || '').trim();\n    const folder = resolveCurrentFolder();\n    const show = !!title && title !== '首页';\n    back.classList.toggle('hidden', !show);\n    back.title = folder ? '返回上级文件夹' : '返回首页';\n    back.setAttribute('aria-label', back.title);\n  }\n"""
+          new = """  function updateBackButton() {\n    const back = $('#folderBackBtn'); if (!back) return;\n    const title = ($('#pageTitle')?.textContent || '').trim();\n    const folder = resolveCurrentFolder();\n    const folderParts = String(folder || '').replace(/\\\\/g,'/').split('/').filter(Boolean);\n    const hasFolderParent = folderParts.length > 1;\n    const isRootFunctionPage = !folder && !!title && title !== '首页' && title !== '根目录';\n    const show = hasFolderParent || isRootFunctionPage;\n    back.classList.toggle('hidden', !show);\n    if (!show) {\n      back.removeAttribute('title');\n      back.removeAttribute('aria-label');\n      back.setAttribute('aria-hidden','true');\n      back.tabIndex = -1;\n      return;\n    }\n    back.removeAttribute('aria-hidden');\n    back.tabIndex = 0;\n    back.title = hasFolderParent ? '返回上级文件夹' : '返回首页';\n    back.setAttribute('aria-label', back.title);\n  }\n"""
           if old in text:
               text = text.replace(old, new, 1)
-          elif 'A root-level page wins over stale folder-nav selection' not in text:
-              raise SystemExit('root navigation anchor changed')
+          elif 'const hasFolderParent = folderParts.length > 1;' not in text:
+              raise SystemExit('back-button anchor changed')
           path.write_text(text, 'utf-8')
+
+          guard = Path('tools/smoke_frontend_guard.py')
+          smoke = guard.read_text('utf-8')
+          smoke = smoke.replace(
+              "assert \"back.title = folder ? '返回上级文件夹' : '返回首页';\" in features\n",
+              "assert \"const hasFolderParent = folderParts.length > 1;\" in features\n"
+              "assert \"const show = hasFolderParent || isRootFunctionPage;\" in features\n"
+              "assert \"back.title = hasFolderParent ? '返回上级文件夹' : '返回首页';\" in features\n"
+              "assert \"Never leave a legacy root button\" in features\n"
+          )
+          guard.write_text(smoke, 'utf-8')
           PY
+
           node --check v23_features.js
+          python -m py_compile tools/smoke_frontend_guard.py
+          python tools/smoke_frontend_guard.py
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add v23_features.js
+          git add v23_features.js tools/smoke_frontend_guard.py
           if git diff --cached --quiet; then
             echo 'No changes needed'
           else
-            git commit -m 'fix: make root-level back return home'
+            git commit -m 'fix: hide non-actionable root back controls'
             git push origin HEAD:fix/tray-lifecycle-2.4.1
           fi
