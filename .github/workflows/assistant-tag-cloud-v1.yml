@@ -1,0 +1,120 @@
+name: Apply Tag classification cloud redesign
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-tag-cloud-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+
+      - name: Redesign Tag classification page and isolate AI Center
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text('utf-8')
+              if old not in text:
+                  raise SystemExit(f'missing anchor in {path}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, count), 'utf-8')
+
+          # Robustly own the Tag nav regardless of whether another startup layer
+          # already changed packs -> tags before this script executes.
+          replace(
+              'library_experience.js',
+              '''  const tagNav = document.querySelector('.main-nav button[data-route="packs"]');\n''',
+              '''  const tagNav = document.querySelector('#tagCategoryNav, .main-nav button[data-route="tags"], .main-nav button[data-route="packs"]');\n'''
+          )
+
+          replace(
+              'library_experience.js',
+              '''    grid?.classList.remove('tag-category-grid');\n''',
+              '''    grid?.classList.remove('tag-category-grid', 'tag-frequency-cloud');\n    if (grid?.dataset.pageOwner === 'tags') delete grid.dataset.pageOwner;\n'''
+          )
+
+          replace(
+              'library_experience.js',
+              '''    tagViewActive = true;\n    activateTagNav();\n    grid.classList.add('tag-category-grid');\n    grid.innerHTML = '<div class="tag-category-loading">正在整理标签…</div>';\n''',
+              '''    tagViewActive = true;\n    window.dispatchEvent(new CustomEvent('localhub:route-change', {detail:{route:'tags'}}));\n    activateTagNav();\n    grid.dataset.pageOwner = 'tags';\n    grid.classList.remove('ai-center-grid');\n    grid.classList.add('tag-category-grid', 'tag-frequency-cloud');\n    grid.innerHTML = '<div class="tag-category-loading">正在整理标签…</div>';\n'''
+          )
+
+          replace(
+              'library_experience.js',
+              '''    if (pageTitle) pageTitle.textContent = 'Tag / 分类';\n''',
+              '''    if (pageTitle) pageTitle.textContent = '标签分类';\n'''
+          )
+
+          replace(
+              'library_experience.js',
+              '''      grid.innerHTML = tags.map(tag => `<button type="button" class="tag-category-card" data-category-tag="${escapeHtml(tag.name)}"><span class="tag-category-name"># ${escapeHtml(tag.name)}</span><small>${tag.count} 个视频</small></button>`).join('');\n      if (meta) meta.textContent = `共 ${tags.length} 个标签`;\n''',
+              '''      const maxCount = Math.max(1, Number(tags[0]?.count) || 1);\n      const minCount = Math.max(0, Number(tags[tags.length - 1]?.count) || 0);\n      const span = Math.max(1, maxCount - minCount);\n      grid.innerHTML = tags.map((tag, index) => {\n        const count = Math.max(0, Number(tag.count) || 0);\n        const strength = (count - minCount) / span;\n        const weight = index < 6 || strength >= .72 ? 4 : index < 16 || strength >= .45 ? 3 : strength >= .20 ? 2 : 1;\n        return `<button type="button" class="tag-category-card tag-weight-${weight}" data-category-tag="${escapeHtml(tag.name)}" title="#${escapeHtml(tag.name)} · ${count} 个视频"><span class="tag-category-name">#${escapeHtml(tag.name)}</span><small>${count}</small></button>`;\n      }).join('');\n      if (meta) meta.textContent = `共 ${tags.length} 个标签 · 按出现频率排序`;\n'''
+          )
+
+          # AI Center gets explicit ownership of the shared grid. No delayed AI
+          # response is allowed to repaint the Tag route after navigation.
+          replace(
+              'ai_center.js',
+              '''  function renderAiPage(overview) {\n    if (!aiPageActive || (pageTitle?.textContent || '').trim() !== 'AI 分析') return;\n''',
+              '''  function renderAiPage(overview) {\n    if (!aiPageActive || grid.dataset.pageOwner !== 'ai' || (pageTitle?.textContent || '').trim() !== 'AI 分析') return;\n'''
+          )
+
+          replace(
+              'ai_center.js',
+              '''    } catch (error) {\n      grid.innerHTML = `<section class="ai-center-page"><div class="ai-current-card"><h3>AI 状态读取失败</h3><p class="ai-muted">${escapeHtml(error.message || error)}</p></div></section>`;\n    }\n''',
+              '''    } catch (error) {\n      if (aiPageActive && grid.dataset.pageOwner === 'ai' && (pageTitle?.textContent || '').trim() === 'AI 分析') {\n        grid.innerHTML = `<section class="ai-center-page"><div class="ai-current-card"><h3>AI 状态读取失败</h3><p class="ai-muted">${escapeHtml(error.message || error)}</p></div></section>`;\n      }\n    }\n'''
+          )
+
+          replace(
+              'ai_center.js',
+              '''  function openAiCenter() {\n    aiPageActive = true;\n    setAiNavActive();\n    grid.classList.add('ai-center-grid');\n''',
+              '''  function openAiCenter() {\n    window.dispatchEvent(new CustomEvent('localhub:route-change', {detail:{route:'ai-center'}}));\n    aiPageActive = true;\n    setAiNavActive();\n    grid.dataset.pageOwner = 'ai';\n    grid.classList.remove('tag-category-grid', 'tag-frequency-cloud');\n    grid.classList.add('ai-center-grid');\n'''
+          )
+
+          replace(
+              'ai_center.js',
+              '''  if (pageTitle) new MutationObserver(() => {\n    if (aiPageActive && (pageTitle.textContent || '').trim() !== 'AI 分析') leaveAiPage();\n  }).observe(pageTitle, {subtree:true, childList:true, characterData:true});\n''',
+              '''  window.addEventListener('localhub:route-change', event => {\n    if (event.detail?.route !== 'ai-center') leaveAiPage();\n  });\n  if (pageTitle) new MutationObserver(() => {\n    if (aiPageActive && (pageTitle.textContent || '').trim() !== 'AI 分析') leaveAiPage();\n  }).observe(pageTitle, {subtree:true, childList:true, characterData:true});\n'''
+          )
+
+          # Horizontal waterfall/tag-cloud layout. Frequency ordering is already
+          # supplied by JS; variable chip widths/sizes make the page scan quickly.
+          p = Path('library_experience.css')
+          text = p.read_text('utf-8')
+          start = text.index('.tag-category-grid{')
+          media = text.index('@media(max-width:900px)', start)
+          replacement = '''.tag-category-grid{display:flex!important;flex-wrap:wrap!important;align-content:flex-start!important;align-items:flex-start!important;justify-content:flex-start!important;gap:10px 9px!important}.tag-category-card{width:auto;min-width:0;min-height:0;padding:9px 13px;border:1px solid #28282d;border-radius:999px;background:#141416;color:#d8d8dc;display:inline-flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:8px;text-align:left;cursor:pointer;transition:border-color .12s ease,background .12s ease,transform .12s ease}.tag-category-card:hover{background:#1c1915;border-color:#8a5a20;transform:translateY(-1px)}.tag-category-name{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:720;color:#dedee2}.tag-category-card:hover .tag-category-name{color:#efb45f}.tag-category-card small{font-size:9px;color:#777983;min-width:14px;text-align:center}.tag-category-card.tag-weight-4{padding:12px 16px;background:#1c1812;border-color:#664719}.tag-category-card.tag-weight-4 .tag-category-name{font-size:15px;font-weight:820;color:#f0c27c}.tag-category-card.tag-weight-4 small{font-size:10px;color:#c9954d}.tag-category-card.tag-weight-3{padding:10px 15px}.tag-category-card.tag-weight-3 .tag-category-name{font-size:13.5px;font-weight:790;color:#e8e2d9}.tag-category-card.tag-weight-2 .tag-category-name{font-size:12.5px}.tag-category-loading,.tag-category-empty{flex:1 0 100%;min-height:170px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#6f7077}.tag-category-empty strong{font-size:14px;color:#aaa}.tag-category-empty span{font-size:11px;color:#666}'''
+          text = text[:start] + replacement + text[media:]
+          text = text.replace('@media(max-width:900px){.sidebar{overflow:auto}.folder-nav{overflow:visible}.tag-category-grid{grid-template-columns:repeat(auto-fill,minmax(145px,1fr))!important}}', '@media(max-width:900px){.sidebar{overflow:auto}.folder-nav{overflow:visible}.tag-category-card{padding:8px 11px}.tag-category-card.tag-weight-4{padding:10px 13px}.tag-category-name{max-width:190px}}')
+          p.write_text(text, 'utf-8')
+
+          # Regression guard for page ownership + frequency cloud.
+          p = Path('tools/smoke_frontend_guard.py')
+          text = p.read_text('utf-8')
+          marker = 'Tag classification frequency cloud regression guard'
+          if marker not in text:
+              text += '''\n# Tag classification frequency cloud regression guard\nlibrary = (ROOT / "library_experience.js").read_text("utf-8")\nlibrary_css = (ROOT / "library_experience.css").read_text("utf-8")\nai_center = (ROOT / "ai_center.js").read_text("utf-8")\nassert "按出现频率排序" in library\nassert "tag-weight-4" in library and "tag-frequency-cloud" in library\nassert "grid.dataset.pageOwner = 'tags'" in library\nassert "grid.dataset.pageOwner = 'ai'" in ai_center\nassert "grid.dataset.pageOwner !== 'ai'" in ai_center\nassert "localhub:route-change" in library and "localhub:route-change" in ai_center\nassert "display:flex!important;flex-wrap:wrap!important" in library_css\n'''
+              p.write_text(text, 'utf-8')
+          PY
+
+          node --check library_experience.js
+          node --check ai_center.js
+          python tools/smoke_frontend_guard.py
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add library_experience.js library_experience.css ai_center.js tools/smoke_frontend_guard.py
+          git commit -m 'fix: make Tag classification a frequency cloud'
+          git push origin HEAD:fix/tray-lifecycle-2.4.1
