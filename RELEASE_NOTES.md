@@ -4,6 +4,15 @@
 
 2.4.0 在 2.2.3 的基础上继续强化本地媒体浏览、播放器稳定性、文件夹整理与本地智能能力。这个 Release 的目的不是继续扩大功能范围，而是为当前已经完成的主线代码建立一个明确、可下载、可回退的稳定节点。
 
+## 下载版本
+
+本 Release 提供两个 Windows 下载选择：
+
+- `LocalHub.exe`：标准版，约 75MB。AI 模型可在需要时再下载。
+- `LocalHub-with-AI.zip`：完整 AI 包，包含 LocalHub 与固定版本的 SigLIP Base Patch16-224 INT8 ONNX 本地模型（模型约 206MB）。解压后双击 `LocalHub with AI.cmd`，第一次启动会把模型复制到当前 Windows 用户的 LocalHub 本地模型目录。
+
+两个下载使用同一套 LocalHub 程序；`with AI` 版本只是把本地模型一起打包，方便一次下载、离线准备和直接交付。
+
 ## 本版重点
 
 - Windows 单文件 `LocalHub.exe`，无需安装 Python、Node.js 或 FFmpeg。
@@ -18,11 +27,19 @@
 
 ## 安装
 
+### 标准版
+
 1. 下载 `LocalHub.exe`。
 2. 把它放到你的媒体总目录。
 3. 双击运行。
 
-LocalHub 会在媒体目录创建 `.localhub/` 保存本地元数据、索引、兼容播放缓存和运行状态。
+### LocalHub with AI
+
+1. 下载并解压 `LocalHub-with-AI.zip`。
+2. 双击 `LocalHub with AI.cmd`。
+3. 第一次启动会使用压缩包内已经附带的模型，不需要再次从网络下载模型。
+
+LocalHub 会在媒体目录创建 `.localhub/` 保存本地元数据、索引、兼容播放缓存和运行状态。AI 模型作为机器级资源保存在当前 Windows 用户的 LocalHub 本地模型目录中。
 
 ## 文件安全说明
 
@@ -34,7 +51,9 @@ LocalHub 会在媒体目录创建 `.localhub/` 保存本地元数据、索引、
 
 2.4.0 已包含本地视觉索引和基于用户已有 Tag 的建议机制，以及相应的 smoke test。
 
-但当前只代表工程链路已经接入，并不代表推荐准确率已经经过真实用户或大型真实媒体库验证。后续将通过真实样本测试准确率、误报率、性能和播放期间的 I/O 影响，再决定它在正式产品中的定位。
+`LocalHub-with-AI.zip` 只是把已经使用的固定模型随包提供，并不改变 AI Tag 当前的产品成熟度。当前只代表工程链路已经接入，并不代表推荐准确率已经经过真实用户或大型真实媒体库验证。后续将通过真实样本测试准确率、误报率、性能和播放期间的 I/O 影响，再决定它在正式产品中的定位。
+
+模型来源：`Xenova/siglip-base-patch16-224`，固定 revision `4649052661e53c7000355844105f8a1792088239`；基础模型为 `google/siglip-base-patch16-224`，许可证为 Apache-2.0。发布流程会校验模型文件大小和 SHA256 后再生成 AI 完整包。
 
 ## Windows SmartScreen
 
