@@ -8,7 +8,7 @@
 
 **纯本地运行 · AI 自动标签 · 封面墙 · 本地推荐 · 播放 / 整理 · Windows 单 EXE**
 
-[English](README_EN.md) · [下载最新版](../../releases/latest) · [发行说明](RELEASE_NOTES.md)
+[English](README_EN.md) · [标准版 EXE](../../releases/latest/download/LocalHub.exe) · [LocalHub with AI](../../releases/latest/download/LocalHub-with-AI.zip) · [发行说明](RELEASE_NOTES.md)
 
 [![Version](https://img.shields.io/badge/stable-2.4.0-f59e0b)](../../releases/latest)
 ![Windows](https://img.shields.io/badge/Windows-x64-222222)
@@ -18,6 +18,17 @@
 </div>
 
 ![LocalHub 首页](docs/images/home.webp)
+
+## 下载
+
+| 版本 | 适合谁 | 内容 |
+|---|---|---|
+| **LocalHub 标准版** | 想先体验媒体库，之后再按需启用 AI | `LocalHub.exe`，约 75MB；AI 模型可在需要时再下载 |
+| **LocalHub with AI** | 想一次下载好，之后直接在本机使用 AI | `LocalHub-with-AI.zip`，包含 LocalHub 和约 206MB 的 SigLIP INT8 本地模型 |
+
+**LocalHub with AI 使用方式：** 解压 ZIP 后，双击 `LocalHub with AI.cmd`。第一次启动会把随包附带的模型复制到当前 Windows 用户的 LocalHub 本地模型目录，之后不需要再次下载模型。
+
+> 两个版本使用的是同一套 LocalHub 程序。`with AI` 只是把固定版本的本地 AI 模型一起打包，方便离线准备和一次性交付。
 
 ## 你的文件夹，不应该只是文件名
 
@@ -60,12 +71,13 @@ LocalHub
 
 LocalHub 的 AI Tag 设计为**本地优先**：
 
-- 可选的轻量 AI 模型单独下载（体积约 200MB，可能随模型版本变化）；
+- 轻量 AI 模型约 206MB，采用 SigLIP Base Patch16-224 INT8 ONNX；
+- 标准版可以在需要时再下载模型，`LocalHub with AI` 则已经把模型一起打包；
 - 识别和标签匹配在本机完成；
 - 适合普通 Windows PC，不以高端显卡为前提；
 - 标签会继续保存在 LocalHub 的本地元数据中。
 
-> 下载程序 / AI 模型时需要网络；**实际管理和识别自己的媒体时不需要把视频或图片上传到远程服务。**
+> 下载程序 / AI 模型时可能需要网络；如果使用 `LocalHub with AI` 完整包，模型本身已经随包提供。**实际管理和识别自己的媒体时不需要把视频或图片上传到远程服务。**
 
 ### 播放、标签、收藏和推荐在同一个页面
 
@@ -82,9 +94,17 @@ LocalHub 的 AI Tag 设计为**本地优先**：
 
 ## 3 步开始
 
-1. 从 [Releases](../../releases/latest) 下载 `LocalHub.exe`。
+**标准版：**
+
+1. 下载 `LocalHub.exe`。
 2. 把 EXE 放进你的媒体总目录。
 3. 双击运行，LocalHub 会自动打开浏览器界面。
+
+**LocalHub with AI：**
+
+1. 下载并解压 `LocalHub-with-AI.zip`。
+2. 把解压后的文件夹放到你希望的位置。
+3. 双击 `LocalHub with AI.cmd`，首次运行会安装随包附带的本地 AI 模型并启动 LocalHub。
 
 ```text
 你的媒体库/
@@ -179,7 +199,7 @@ LocalHub 的“改名”和“移动”是真实文件操作，而不是只改�
 
 ## 开发者
 
-普通用户只需要 Release 中的 Windows EXE。
+普通用户只需要 Release 中的 Windows EXE，或者选择已经附带模型的 `LocalHub-with-AI.zip`。
 
 从源码构建：
 
@@ -199,6 +219,6 @@ LocalHub 的“改名”和“移动”是真实文件操作，而不是只改�
 
 **Your files. Your library. Your machine.**
 
-[下载最新版](../../releases/latest) · [English README](README_EN.md)
+[标准版 EXE](../../releases/latest/download/LocalHub.exe) · [LocalHub with AI](../../releases/latest/download/LocalHub-with-AI.zip) · [English README](README_EN.md)
 
 </div>
