@@ -63,6 +63,40 @@ jobs:
               '''      const maxCount = Math.max(1, Number(tags[0]?.count) || 1);\n      const minCount = Math.max(0, Number(tags[tags.length - 1]?.count) || 0);\n      const span = Math.max(1, maxCount - minCount);\n      grid.innerHTML = tags.map((tag, index) => {\n        const count = Math.max(0, Number(tag.count) || 0);\n        const strength = (count - minCount) / span;\n        const weight = index < 6 || strength >= .72 ? 4 : index < 16 || strength >= .45 ? 3 : strength >= .20 ? 2 : 1;\n        return `<button type="button" class="tag-category-card tag-weight-${weight}" data-category-tag="${escapeHtml(tag.name)}" title="#${escapeHtml(tag.name)} · ${count} 个视频"><span class="tag-category-name">#${escapeHtml(tag.name)}</span><small>${count}</small></button>`;\n      }).join('');\n      if (meta) meta.textContent = `共 ${tags.length} 个标签 · 按出现频率排序`;\n'''
           )
 
+          # Tag click must mean exact Tag membership, not a fuzzy filename/folder search.
+          replace(
+              'library_experience.js',
+              '''      leaveTagView();\n      if (search) {\n        search.value = tag;\n        search.dispatchEvent(new Event('input', {bubbles:true}));\n        setTimeout(() => tagNav?.classList.add('active'), 320);\n      }\n      return;\n''',
+              '''      leaveTagView();\n      if (search) search.value = '';\n      window.dispatchEvent(new CustomEvent('localhub:open-tag', {detail:{tag}}));\n      setTimeout(() => tagNav?.classList.add('active'), 80);\n      return;\n'''
+          )
+
+          # Smart UI owns media-card rendering, so expose an exact Tag-list route.
+          p = Path('smart_ui.js')
+          text = p.read_text('utf-8')
+          anchor = '''  function searchNow(q){const t=String(q||'').trim();if(!t)return loadHome().catch(e=>toast(e.message));state.query=t;state.folder='';loadList('search',{offset:0}).catch(e=>toast(e.message));}\n'''
+          insert = '''  function searchNow(q){const t=String(q||'').trim();if(!t)return loadHome().catch(e=>toast(e.message));state.query=t;state.folder='';loadList('search',{offset:0}).catch(e=>toast(e.message));}\n  async function loadExactTag(tag,{offset=0}={}){\n    const clean=String(tag||'').trim();if(!clean)return;\n    const token=++state.requestToken;state.route='tag';state.folder='';state.query='';state.offset=Math.max(0,offset);state.clientIds=[];\n    const d=await api(`/api/smart/list?view=tag&tag=${encodeURIComponent(clean)}&offset=${state.offset}&limit=${PAGE_SIZE}`);if(token!==state.requestToken)return;\n    state.items=d.items||[];state.total=Number(d.total)||0;state.hasMore=!!d.hasMore;el.title.textContent=`#${clean}`;el.meta.textContent=`${state.total} 个视频`;el.hint.textContent='';\n    $$('.main-nav button').forEach(b=>b.classList.toggle('active',b.id==='tagCategoryNav'||b.dataset.route==='tags'));renderFull();scrollTopFast();\n  }\n  window.addEventListener('localhub:open-tag',event=>loadExactTag(event.detail?.tag||'',{offset:0}).catch(e=>toast(e.message)));\n'''
+          if 'function loadExactTag(' not in text:
+              if anchor not in text: raise SystemExit('smart_ui exact-tag anchor missing')
+              text=text.replace(anchor,insert,1)
+          # Paging exact Tag membership must stay exact.
+          old_change = '''else if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));'''
+          new_change = '''else if(state.route==='favorite'||state.route==='continue')loadClientSubset(state.route,{offset:next}).catch(e=>toast(e.message));else if(state.route==='tag')loadExactTag(el.title.textContent.replace(/^#/,'').trim(),{offset:next}).catch(e=>toast(e.message));else loadList(state.route,{offset:next}).catch(e=>toast(e.message));'''
+          if old_change in text:
+              text=text.replace(old_change,new_change,1)
+          p.write_text(text,'utf-8')
+
+          # Backend exact Tag view. Tag comparisons are case-insensitive but otherwise exact.
+          p = Path('smart_mode.py')
+          text = p.read_text('utf-8')
+          # Find the existing list-view handler and add tag query support conservatively.
+          marker = 'view == "tag"'
+          if marker not in text:
+              old = '''            if view == "search":\n                query = str(params.get("q", [""])[0]).strip().casefold()\n'''
+              new = '''            if view == "tag":\n                tag = str(params.get("tag", [""])[0]).strip().casefold()\n                if not tag:\n                    return self._smart_json({"items": [], "total": 0, "hasMore": False, "title": "Tag"})\n                rows = [item for item in catalog.items if item.get("type") == "video" and any(str(value).strip().casefold() == tag for value in (item.get("tags") or []))]\n                total = len(rows)\n                page = rows[offset:offset + limit]\n                return self._smart_json({"items": catalog.decorate(page), "total": total, "hasMore": offset + len(page) < total, "title": f"#{params.get('tag',[\"\"])[0]}"})\n            if view == "search":\n                query = str(params.get("q", [""])[0]).strip().casefold()\n'''
+              if old not in text: raise SystemExit('smart_mode tag-view anchor missing')
+              text=text.replace(old,new,1)
+              p.write_text(text,'utf-8')
+
           # AI Center gets explicit ownership of the shared grid. No delayed AI
           # response is allowed to repaint the Tag route after navigation.
           replace(
@@ -105,16 +139,18 @@ jobs:
           text = p.read_text('utf-8')
           marker = 'Tag classification frequency cloud regression guard'
           if marker not in text:
-              text += '''\n# Tag classification frequency cloud regression guard\nlibrary = (ROOT / "library_experience.js").read_text("utf-8")\nlibrary_css = (ROOT / "library_experience.css").read_text("utf-8")\nai_center = (ROOT / "ai_center.js").read_text("utf-8")\nassert "按出现频率排序" in library\nassert "tag-weight-4" in library and "tag-frequency-cloud" in library\nassert "grid.dataset.pageOwner = 'tags'" in library\nassert "grid.dataset.pageOwner = 'ai'" in ai_center\nassert "grid.dataset.pageOwner !== 'ai'" in ai_center\nassert "localhub:route-change" in library and "localhub:route-change" in ai_center\nassert "display:flex!important;flex-wrap:wrap!important" in library_css\n'''
+              text += '''\n# Tag classification frequency cloud regression guard\nlibrary = (ROOT / "library_experience.js").read_text("utf-8")\nlibrary_css = (ROOT / "library_experience.css").read_text("utf-8")\nai_center = (ROOT / "ai_center.js").read_text("utf-8")\nsmart_ui = (ROOT / "smart_ui.js").read_text("utf-8")\nsmart_mode = (ROOT / "smart_mode.py").read_text("utf-8")\nassert "按出现频率排序" in library\nassert "tag-frequency-cloud" in library\nassert "tag-weight-4" in library_css\nassert "grid.dataset.pageOwner = 'tags'" in library\nassert "grid.dataset.pageOwner = 'ai'" in ai_center\nassert "grid.dataset.pageOwner !== 'ai'" in ai_center\nassert "localhub:route-change" in library and "localhub:route-change" in ai_center\nassert "localhub:open-tag" in library and "loadExactTag" in smart_ui\nassert 'view == "tag"' in smart_mode\nassert "display:flex!important;flex-wrap:wrap!important" in library_css\n'''
               p.write_text(text, 'utf-8')
           PY
 
           node --check library_experience.js
           node --check ai_center.js
+          node --check smart_ui.js
+          python -m py_compile smart_mode.py
           python tools/smoke_frontend_guard.py
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add library_experience.js library_experience.css ai_center.js tools/smoke_frontend_guard.py
+          git add library_experience.js library_experience.css ai_center.js smart_ui.js smart_mode.py tools/smoke_frontend_guard.py
           git commit -m 'fix: make Tag classification a frequency cloud'
           git push origin HEAD:fix/tray-lifecycle-2.4.1
