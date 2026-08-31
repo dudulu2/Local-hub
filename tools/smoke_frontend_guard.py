@@ -17,15 +17,20 @@ assert "target===document.body" in html
 assert "target?.id==='rescanBtn'" in html
 assert "attributeFilter:['disabled']" in html
 
-# Root-level pages (AI, Tag categories, all videos, etc.) must ignore a stale
-# highlighted folder and make the visible Back button return Home.
+# Root-level feature pages (AI, Tag categories, all videos, search, etc.) ignore
+# stale folder selection and expose a real Back-to-Home action. A top-level
+# media folder has no folder parent, so it must not show a fake Back/Up control.
 assert "A root-level page wins over stale folder-nav selection" in features
 assert "if (mainActive || rootPages.has(title) || title.startsWith('搜索：')) currentFolder = '';" in features
 assert "$('#brandBtn')?.click();" in features
 assert "const hasFolderParent = folderParts.length > 1;" in features
+assert "const isRootFunctionPage = !folder && !!title && title !== '首页' && title !== '根目录';" in features
 assert "const show = hasFolderParent || isRootFunctionPage;" in features
 assert "back.title = hasFolderParent ? '返回上级文件夹' : '返回首页';" in features
+assert "back.setAttribute('aria-hidden','true');" in features
+assert "back.tabIndex = -1;" in features
 assert "Never leave a legacy root button" in features
+assert "$$('.main-nav button[data-route=\"root\"]').forEach(node => node.remove());" in features
 
 # AI-managed Tag changes are pushed into visible cards/player without requiring
 # an F5 refresh. The category page receives an invalidation event separately.
