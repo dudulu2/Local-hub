@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import threading
@@ -16,6 +17,9 @@ import smart_thumbnail
 HOME_MIN = 13
 HOME_MAX = 15
 PAGE_LIMIT = 30
+CHANGE_CHECK_INTERVAL = 8.0
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v", ".mov", ".mkv", ".avi", ".ogv", ".mpeg", ".mpg", ".ts"}
+WATCH_IGNORED_DIRS = {".git", ".localhub", "__pycache__", "node_modules", ".idea", ".vscode"}
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -94,6 +98,11 @@ class Catalog:
         self.direct_by_folder: dict[str, list[dict]] = defaultdict(list)
         self.folder_stats: dict[str, dict] = {}
         self.search_rows: list[tuple[str, dict]] = []
+        self.video_ids: set[str] = set()
+        self.session_new_ids: list[str] = []
+        self.initialized = False
+        self.last_change_check = 0.0
+        self._track_next_refresh = False
         self.built_at = 0.0
         self.building = False
         self._start_refresh()
@@ -106,7 +115,10 @@ class Catalog:
             self.ready.clear()
         threading.Thread(target=self._refresh_worker, name="LocalHubCatalog", daemon=True).start()
 
-    def refresh(self, wait: bool = False) -> None:
+    def refresh(self, wait: bool = False, track_new: bool = False) -> None:
+        with self.lock:
+            if track_new:
+                self._track_next_refresh = True
         self._start_refresh()
         if wait:
             self.ready.wait(20)
@@ -115,6 +127,7 @@ class Catalog:
         try:
             items = self.store.scan()
             by_id = {item["id"]: item for item in items}
+            current_video_ids = {item["id"] for item in items if item["type"] == "video"}
             direct: dict[str, list[dict]] = defaultdict(list)
             stats: dict[str, dict] = {}
             for item in items:
@@ -133,12 +146,39 @@ class Catalog:
                 searches.append((blob, item))
 
             with self.lock:
+                previous_video_ids = set(self.video_ids)
+                was_initialized = self.initialized
+                track_new = bool(self._track_next_refresh)
+                self._track_next_refresh = False
                 self.items = items
                 self.by_id = by_id
                 self.direct_by_folder = direct
                 self.folder_stats = stats
                 self.search_rows = searches
+                self.video_ids = current_video_ids
                 self.built_at = time.time()
+
+                existing = [item_id for item_id in self.session_new_ids if item_id in by_id]
+                if was_initialized and track_new:
+                    added = [
+                        item["id"]
+                        for item in sorted(items, key=lambda row: row.get("modified", 0), reverse=True)
+                        if item["type"] == "video" and item["id"] not in previous_video_ids
+                    ]
+                    merged: list[str] = []
+                    seen: set[str] = set()
+                    for item_id in added + existing:
+                        if item_id in seen:
+                            continue
+                        seen.add(item_id)
+                        merged.append(item_id)
+                    self.session_new_ids = merged
+                else:
+                    self.session_new_ids = existing
+                    if not was_initialized:
+                        # Everything present during a first build with no prior
+                        # snapshot is the baseline, not an unread notification.
+                        self.initialized = True
         finally:
             with self.lock:
                 self.building = False
@@ -146,6 +186,44 @@ class Catalog:
 
     def _await(self) -> None:
         self.ready.wait(20)
+
+    def _quick_video_ids(self) -> set[str]:
+        """Cheap addition/removal check: paths only, no media stat/probe work."""
+        result: set[str] = set()
+        root = self.store.root
+        for current, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in WATCH_IGNORED_DIRS and not d.startswith(".")]
+            current_path = Path(current)
+            for filename in files:
+                if Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
+                    continue
+                absolute = current_path / filename
+                try:
+                    relative = absolute.relative_to(root)
+                except ValueError:
+                    continue
+                if any(part.startswith(".") for part in relative.parts):
+                    continue
+                result.add(relative.as_posix())
+        return result
+
+    def detect_changes(self) -> bool:
+        """Refresh the full catalog only when a throttled path check changed."""
+        self._await()
+        now = time.monotonic()
+        with self.lock:
+            if self.building or now - self.last_change_check < CHANGE_CHECK_INTERVAL:
+                return False
+            self.last_change_check = now
+            known = set(self.video_ids)
+        try:
+            current = self._quick_video_ids()
+        except OSError:
+            return False
+        if current == known:
+            return False
+        self.refresh(wait=True, track_new=True)
+        return True
 
     def stats(self) -> dict:
         self._await()
@@ -155,49 +233,95 @@ class Catalog:
             return {
                 "count": len(self.items), "videos": videos, "images": images,
                 "folders": len(self.folder_stats), "builtAt": int(self.built_at * 1000),
+                "newVideos": len(self.session_new_ids),
             }
 
     def folders(self, limit: int = 120) -> list[dict]:
         self._await()
         with self.lock:
             rows = [dict(row) for row in self.folder_stats.values()]
-        rows.sort(key=lambda r: (r["path"].count("/"), -r["videos"], -r["images"], r["path"].casefold()))
-        return rows[:limit]
 
-    def home(self) -> list[dict]:
+        # Sidebar folders must be emitted in real tree preorder. Sorting every
+        # depth globally makes a child such as Videos/上课 appear after an
+        # unrelated root folder (for example 亚洲), which visually attaches the
+        # child to the wrong parent. Keep each child directly under its true
+        # parent path instead.
+        by_parent: dict[str, list[dict]] = defaultdict(list)
+        known_paths = {row["path"] for row in rows}
+        for row in rows:
+            path = row["path"]
+            parent = path.rsplit("/", 1)[0] if "/" in path else ""
+            if parent and parent not in known_paths:
+                parent = ""
+            by_parent[parent].append(row)
+
+        for siblings in by_parent.values():
+            siblings.sort(key=lambda r: (-r["videos"], -r["images"], r["name"].casefold(), r["path"].casefold()))
+
+        ordered: list[dict] = []
+        seen: set[str] = set()
+
+        def visit(parent: str) -> None:
+            for row in by_parent.get(parent, []):
+                path = row["path"]
+                if path in seen or len(ordered) >= limit:
+                    continue
+                seen.add(path)
+                ordered.append(row)
+                visit(path)
+
+        visit("")
+        if len(ordered) < min(limit, len(rows)):
+            leftovers = [row for row in rows if row["path"] not in seen]
+            leftovers.sort(key=lambda r: (r["path"].casefold(),))
+            ordered.extend(leftovers[: max(0, limit - len(ordered))])
+        return ordered[:limit]
+
+    def home(self, offset: int = 0, limit: int = HOME_MAX, seed: str = "") -> dict:
+        """Return one stable random home sequence without repeats.
+
+        Page one prioritizes videos directly beside LocalHub.exe. If there are
+        at least 15 root videos, 15 are sampled from that root pool. If there
+        are fewer, all root videos are kept and random videos from subfolders
+        fill the first page. Remaining pages shuffle every still-unseen video,
+        so a browsing round never repeats an item before the library is exhausted.
+        """
         self._await()
+        limit = max(1, min(HOME_MAX, int(limit or HOME_MAX)))
+        offset = max(0, int(offset or 0))
         with self.lock:
             root_videos = [item for item in self.direct_by_folder.get("", []) if item["type"] == "video"]
             all_videos = [item for item in self.items if item["type"] == "video"]
-            by_folder = defaultdict(list)
-            for item in all_videos:
-                if item.get("folder"):
-                    by_folder[item["folder"]].append(item)
 
-        root_videos.sort(key=lambda item: item.get("modified", 0), reverse=True)
-        selected = root_videos[:HOME_MAX]
-        selected_ids = {item["id"] for item in selected}
-        if len(selected) < HOME_MIN:
-            day = int(time.time() // 86400)
-            seed_text = f"{self.store.root}|{day}"
-            seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
-            rng = random.Random(seed)
-            folders = list(by_folder)
-            rng.shuffle(folders)
-            for folder in folders:
-                choices = [x for x in by_folder[folder] if x["id"] not in selected_ids]
-                if not choices:
-                    continue
-                item = rng.choice(choices)
-                selected.append(item)
-                selected_ids.add(item["id"])
-                if len(selected) >= HOME_MIN:
-                    break
-            if len(selected) < HOME_MAX:
-                rest = [item for item in all_videos if item["id"] not in selected_ids]
-                rng.shuffle(rest)
-                selected.extend(rest[: HOME_MAX - len(selected)])
-        return [_media_public(item) for item in selected[:HOME_MAX]]
+        root_videos = sorted(root_videos, key=lambda item: item["id"].casefold())
+        all_videos = sorted(all_videos, key=lambda item: item["id"].casefold())
+        seed_text = f"{self.store.root}|{str(seed)[:128] or int(time.time() // 86400)}"
+        seed_value = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
+        rng = random.Random(seed_value)
+
+        root_pool = list(root_videos)
+        rng.shuffle(root_pool)
+        if len(root_pool) >= HOME_MAX:
+            first = root_pool[:HOME_MAX]
+        else:
+            first = list(root_pool)
+            root_ids = {item["id"] for item in first}
+            others = [item for item in all_videos if item["id"] not in root_ids]
+            rng.shuffle(others)
+            first.extend(others[: max(0, HOME_MAX - len(first))])
+
+        first_ids = {item["id"] for item in first}
+        remaining = [item for item in all_videos if item["id"] not in first_ids]
+        rng.shuffle(remaining)
+        ordered = first + remaining
+        page = ordered[offset: offset + limit]
+        return {
+            "items": [_media_public(item) for item in page],
+            "total": len(ordered),
+            "offset": offset,
+            "limit": limit,
+            "hasMore": offset + limit < len(ordered),
+        }
 
     def _folder_payload(self, folder: str) -> list[dict]:
         with self.lock:
@@ -229,7 +353,11 @@ class Catalog:
         return result
 
     def list_view(self, view: str, folder: str = "", q: str = "", offset: int = 0, limit: int = PAGE_LIMIT) -> dict:
-        self._await()
+        catalog_changed = False
+        if view == "new":
+            catalog_changed = self.detect_changes()
+        else:
+            self._await()
         limit = max(1, min(60, limit))
         offset = max(0, offset)
         if view == "folder":
@@ -247,6 +375,18 @@ class Catalog:
                     rows.append(_pack_public(path, images))
             rows.sort(key=lambda row: row.get("modified", 0), reverse=True)
             title = "图包 / 图册"
+        elif view == "tag":
+            needle = q.strip().casefold()
+            with self.lock:
+                matches = [
+                    item for item in self.items
+                    if item.get("type") == "video"
+                    and needle
+                    and any(str(value).strip().casefold() == needle for value in (item.get("tags") or []))
+                ]
+            matches.sort(key=lambda item: item.get("modified", 0), reverse=True)
+            rows = [_media_public(item) for item in matches]
+            title = f"#{q}"
         elif view == "search":
             needle = q.strip().casefold()
             with self.lock:
@@ -254,6 +394,14 @@ class Catalog:
             matches.sort(key=lambda item: item.get("modified", 0), reverse=True)
             rows = [_media_public(item) for item in matches]
             title = f"搜索：{q}"
+        elif view == "new":
+            with self.lock:
+                rows = [
+                    _media_public(self.by_id[item_id])
+                    for item_id in self.session_new_ids
+                    if item_id in self.by_id and self.by_id[item_id]["type"] == "video"
+                ]
+            title = "新视频"
         else:
             with self.lock:
                 videos = [item for item in self.items if item["type"] == "video"]
@@ -261,7 +409,10 @@ class Catalog:
             rows = [_media_public(item) for item in videos]
             title = "全部视频"
         page = rows[offset: offset + limit]
-        return {"title": title, "items": page, "total": len(rows), "offset": offset, "limit": limit, "hasMore": offset + limit < len(rows)}
+        payload = {"title": title, "items": page, "total": len(rows), "offset": offset, "limit": limit, "hasMore": offset + limit < len(rows)}
+        if view == "new":
+            payload["catalogChanged"] = catalog_changed
+        return payload
 
     def by_ids(self, ids: list[str]) -> list[dict]:
         self._await()
@@ -287,10 +438,13 @@ def install(server_module) -> None:
     smart_html = app_dir / "smart_index.html"
     smart_js = app_dir / "smart_ui.js"
     smart_css = app_dir / "smart_ui.css"
+    server_module.STATIC_FILES["/library_experience.js"] = app_dir / "library_experience.js"
+    server_module.STATIC_FILES["/library_experience.css"] = app_dir / "library_experience.css"
 
     def make_handler(store):
         BaseHandler = original_make_handler(store)
         catalog = Catalog(store)
+        store._smart_catalog = catalog
 
         class SmartHandler(BaseHandler):
             server_version = "LocalHub/2.0"
@@ -320,7 +474,15 @@ def install(server_module) -> None:
                 if path == "/smart_ui.css":
                     return self._smart_static(smart_css, "text/css; charset=utf-8")
                 if path == "/api/smart/home":
-                    return self._send_json({"items": catalog.home(), "folders": catalog.folders(), "stats": catalog.stats()})
+                    try:
+                        offset = int(query.get("offset", ["0"])[0] or 0)
+                        limit = int(query.get("limit", [str(HOME_MAX)])[0] or HOME_MAX)
+                    except ValueError:
+                        offset, limit = 0, HOME_MAX
+                    payload = catalog.home(offset=offset, limit=limit, seed=query.get("seed", [""])[0])
+                    payload["folders"] = catalog.folders()
+                    payload["stats"] = catalog.stats()
+                    return self._send_json(payload)
                 if path == "/api/smart/list":
                     try:
                         offset = int(query.get("offset", ["0"])[0] or 0)
@@ -342,7 +504,10 @@ def install(server_module) -> None:
                 if path == "/api/smart/pack":
                     return self._send_json(catalog.pack(query.get("folder", [""])[0]))
                 if path == "/api/smart/rescan":
-                    catalog.refresh(wait=True)
+                    # Manual rescans include LocalHub's own rename/move workflow.
+                    # They refresh the catalog but deliberately do not create new
+                    # video notifications from path changes.
+                    catalog.refresh(wait=True, track_new=False)
                     return self._send_json({"ok": True, "stats": catalog.stats()})
                 if path == "/api/smart/thumb":
                     relative = query.get("path", [""])[0]

@@ -13,6 +13,7 @@ on:
       - 'preview_support.py'
       - 'interactive_preview_support.py'
       - 'playback_stability.*'
+      - 'library_experience.*'
       - 'media_probe.py'
       - 'compat_support.py'
       - 'rating_support.py'
@@ -50,6 +51,7 @@ on:
       - 'preview_support.py'
       - 'interactive_preview_support.py'
       - 'playback_stability.*'
+      - 'library_experience.*'
       - 'media_probe.py'
       - 'compat_support.py'
       - 'rating_support.py'
@@ -97,12 +99,13 @@ jobs:
         run: python -m pip install --upgrade pyinstaller pystray pillow imageio-ffmpeg comtypes numpy onnxruntime sentencepiece
 
       - name: Validate Python
-        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py interactive_preview_support.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py io_scheduler.py io_support.py visual_encoder.py visual_index.py auto_tag_prompts.py auto_tag_support.py siglip_encoder.py siglip_support.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py tools/smoke_recommend.py tools/smoke_frontend_guard.py tools/smoke_browser.py tools/smoke_auto_tag.py tools/smoke_siglip_online.py tools/smoke_playback_stability.py
+        run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py interactive_preview_support.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py io_scheduler.py io_support.py visual_encoder.py visual_index.py auto_tag_prompts.py auto_tag_support.py siglip_encoder.py siglip_support.py tools/smoke_smart.py tools/smoke_preview.py tools/smoke_compat.py tools/smoke_metadata.py tools/smoke_launcher.py tools/smoke_recommend.py tools/smoke_frontend_guard.py tools/smoke_browser.py tools/smoke_auto_tag.py tools/smoke_siglip_online.py tools/smoke_playback_stability.py tools/prepare_siglip_bundle.py
 
       - name: Validate frontend JavaScript
         shell: pwsh
         run: |
           node --check .\smart_ui.js
+          node --check .\library_experience.js
           node --check .\ux_enhancements.js
           node --check .\move_branding.js
           node --check .\v23_features.js
@@ -151,6 +154,10 @@ jobs:
       - name: Build one-file executable
         run: pyinstaller --noconfirm --clean LocalHub.spec
 
+      - name: Prepare offline AI model package
+        timeout-minutes: 12
+        run: python tools/prepare_siglip_bundle.py .\dist\LocalHub-AI-Model
+
       - name: Execute packaged EXE self-test behind hostile proxy
         shell: pwsh
         run: |
@@ -166,12 +173,78 @@ jobs:
           }
           Write-Host "Packaged LocalHub proxy-isolation self-test passed"
 
-      - name: Generate SHA256
+      - name: Verify packaged EXE survives tray startup
         shell: pwsh
         run: |
-          $hash = (Get-FileHash .\dist\LocalHub.exe -Algorithm SHA256).Hash.ToLower()
-          "LocalHub.exe  $hash" | Set-Content .\dist\SHA256.txt -Encoding utf8
-          Write-Host "SHA256: $hash"
+          Remove-Item .\dist\.localhub -Recurse -Force -ErrorAction SilentlyContinue
+          $env:LOCALHUB_NO_BROWSER = '1'
+          $launcherProcess = Start-Process -FilePath .\dist\LocalHub.exe -PassThru
+          try {
+            Start-Sleep -Seconds 4
+            $launcherProcess.Refresh()
+            if ($launcherProcess.HasExited) {
+              throw "Packaged LocalHub exited during normal startup with code $($launcherProcess.ExitCode)"
+            }
+
+            $runtimePath = '.\dist\.localhub\runtime.json'
+            if (-not (Test-Path $runtimePath)) {
+              throw 'Packaged LocalHub stayed alive but did not create runtime.json'
+            }
+
+            $runtime = Get-Content $runtimePath -Raw | ConvertFrom-Json
+            $serverPid = [int]$runtime.pid
+            $port = [int]$runtime.port
+            if (-not (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) {
+              throw "Runtime PID $serverPid is not alive"
+            }
+
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 5
+            if ($health.ok -ne $true) {
+              throw "Packaged LocalHub health check failed on port $port"
+            }
+            Write-Host "Packaged LocalHub stayed alive after tray startup; pid=$serverPid port=$port"
+          }
+          finally {
+            if (Test-Path '.\dist\.localhub\launcher-warning.log') {
+              Write-Host '--- launcher warnings ---'
+              Get-Content '.\dist\.localhub\launcher-warning.log'
+            }
+            if (Test-Path '.\dist\.localhub\startup-error.log') {
+              Write-Host '--- startup errors ---'
+              Get-Content '.\dist\.localhub\startup-error.log'
+            }
+            if (Test-Path '.\dist\.localhub\runtime.json') {
+              try {
+                $runtime = Get-Content '.\dist\.localhub\runtime.json' -Raw | ConvertFrom-Json
+                Stop-Process -Id ([int]$runtime.pid) -Force -ErrorAction SilentlyContinue
+              } catch {}
+            }
+            Stop-Process -Id $launcherProcess.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:LOCALHUB_NO_BROWSER -ErrorAction SilentlyContinue
+          }
+
+      - name: Generate package SHA256
+        shell: pwsh
+        run: |
+          $targets = @(
+            Get-Item .\dist\LocalHub.exe
+            Get-ChildItem .\dist\LocalHub-AI-Model -File | Sort-Object Name
+          )
+          $lines = foreach ($file in $targets) {
+            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
+            $relative = [IO.Path]::GetRelativePath((Resolve-Path .\dist).Path, $file.FullName).Replace('\','/')
+            "$hash  $relative"
+          }
+          $lines | Set-Content .\dist\SHA256.txt -Encoding utf8
+          $lines | ForEach-Object { Write-Host $_ }
+
+      - name: Create release ZIP
+        shell: pwsh
+        run: |
+          $zip = '.\dist\LocalHub-Windows-x64.zip'
+          Remove-Item $zip -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path .\dist\LocalHub.exe,.\dist\SHA256.txt,.\dist\LocalHub-AI-Model -DestinationPath $zip -CompressionLevel Optimal
+          Write-Host "Package: $zip"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
@@ -180,6 +253,7 @@ jobs:
           path: |
             dist/LocalHub.exe
             dist/SHA256.txt
+            dist/LocalHub-AI-Model/**
           if-no-files-found: error
           compression-level: 0
 
@@ -194,9 +268,9 @@ jobs:
           $tag = "v$version"
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag .\dist\LocalHub.exe .\dist\SHA256.txt --clobber
+            gh release upload $tag .\dist\LocalHub-Windows-x64.zip .\dist\SHA256.txt --clobber
           } else {
-            gh release create $tag .\dist\LocalHub.exe .\dist\SHA256.txt --target "${{ github.sha }}" --title "LocalHub $version" --notes-file .\RELEASE_NOTES.md
+            gh release create $tag .\dist\LocalHub-Windows-x64.zip .\dist\SHA256.txt --target "${{ github.sha }}" --title "LocalHub $version" --notes-file .\RELEASE_NOTES.md
           }
 
       - name: Publish tagged release
@@ -208,7 +282,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag .\dist\LocalHub.exe .\dist\SHA256.txt --clobber
+            gh release upload $tag .\dist\LocalHub-Windows-x64.zip .\dist\SHA256.txt --clobber
           } else {
-            gh release create $tag .\dist\LocalHub.exe .\dist\SHA256.txt --title "LocalHub $tag" --generate-notes
+            gh release create $tag .\dist\LocalHub-Windows-x64.zip .\dist\SHA256.txt --title "LocalHub $tag" --generate-notes
           }

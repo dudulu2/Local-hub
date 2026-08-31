@@ -1,0 +1,88 @@
+name: Repair AI Tag reconcile pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/assistant-fix-taxonomy-group-names.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Repair existing-index AI Tag reconciliation and live refresh
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('ai_center_support.py')
+          text = path.read_text('utf-8')
+          old = '''            '  <script src="/auto_tag_ui.js"></script>\\n'\n            '  <script src="/playback_stability.js"></script>\\n'\n            '  <script src="/ai_center.js"></script>\\n</body>',\n'''
+          new = '''            '  <script src="/auto_tag_ui.js"></script>\\n'\n            '  <script src="/playback_stability.js"></script>\\n'\n            '  <script src="/ai_tag_live_sync.js"></script>\\n'\n            '  <script src="/ai_center.js"></script>\\n</body>',\n'''
+          if old not in text:
+              raise SystemExit('missing ai_center script injection anchor')
+          path.write_text(text.replace(old, new, 1), 'utf-8')
+
+          path = Path('library_experience.js')
+          text = path.read_text('utf-8')
+          text = text.replace(
+              "grid.innerHTML = '<div class=\"tag-category-empty\"><strong>还没有标签</strong><span>给视频添加 Tag，或接受 AI Tag 后会自动出现在这里。</span></div>';",
+              "grid.innerHTML = '<div class=\"tag-category-empty\"><strong>还没有标签</strong><span>手工添加 Tag，或等待 AI 分析完成后会自动出现在这里。</span></div>';",
+              1,
+          )
+          old = '''  window.addEventListener('localhub:ai-tags-updated', () => {\n    tagCache = null;\n    tagCacheAt = 0;\n  });\n'''
+          new = '''  window.addEventListener('localhub:ai-tags-updated', () => {\n    tagCache = null;\n    tagCacheAt = 0;\n    if (tagViewActive) renderTagOverview();\n  });\n'''
+          if old not in text:
+              raise SystemExit('missing tag live refresh anchor')
+          path.write_text(text.replace(old, new, 1), 'utf-8')
+
+          path = Path('ai_tag_sync_support.py')
+          text = path.read_text('utf-8')
+          old = '''        try:\n            text_vectors = self.manager._siglip_prompt_vectors()\n        except Exception:\n            return None\n        if not text_vectors:\n            return None\n\n        try:\n'''
+          new = '''        try:\n            text_vectors = self.manager._siglip_prompt_vectors()\n        except Exception:\n            return None\n        if not text_vectors:\n            return None\n\n        required_keys = {\n            str(row.get("tag", "")).strip().casefold()\n            for group in settings.get("groups", [])\n            if isinstance(group, dict) and group.get("enabled")\n            for row in (group.get("tags", []) if isinstance(group.get("tags"), list) else [])\n            if isinstance(row, dict) and str(row.get("tag", "")).strip()\n        }\n        available_keys = {str(tag).strip().casefold() for tag in text_vectors}\n        if required_keys:\n            coverage = len(required_keys & available_keys) / max(1, len(required_keys))\n            if coverage < 0.97:\n                return None\n\n        try:\n'''
+          if old not in text:
+              raise SystemExit('missing prompt coverage anchor')
+          text = text.replace(old, new, 1)
+
+          start = text.index('    @staticmethod\n    def _select(')
+          end = text.index('    def _publish_catalog_tags', start)
+          replacement = '''    @staticmethod\n    def _select(scored: list[tuple[str, float]], settings: dict) -> list[str]:\n        \"\"\"Select precise tags per semantic group, with a tiny usable fallback.\"\"\"\n        if not scored:\n            return []\n        score_map = {str(tag).casefold(): (str(tag), float(score)) for tag, score in scored}\n        selected: list[str] = []\n        selected_keys: set[str] = set()\n        fallback_groups: list[tuple[str, list[tuple[str, float]], float, float]] = []\n\n        for group in settings.get("groups", []):\n            if not isinstance(group, dict) or not group.get("enabled"):\n                continue\n            candidates: list[tuple[str, float]] = []\n            for row in group.get("tags", []):\n                if not isinstance(row, dict):\n                    continue\n                key = str(row.get("tag", "")).strip().casefold()\n                if key and key in score_map:\n                    candidates.append(score_map[key])\n            candidates.sort(key=lambda row: row[1], reverse=True)\n            if len(candidates) < 3:\n                continue\n\n            values = [score for _, score in candidates]\n            median = statistics.median(values)\n            spread = statistics.pstdev(values) if len(values) > 1 else 0.0\n            best = candidates[0][1]\n            runner = candidates[1][1]\n            best_lift = best - median\n            gap = best - runner\n            group_id = str(group.get("id", ""))\n            fallback_groups.append((group_id, candidates, best_lift, spread))\n\n            min_lift = max(0.0030, spread * 0.42)\n            min_gap = max(0.0010, spread * 0.065)\n            strong = best_lift >= min_lift and (gap >= min_gap or best_lift >= max(0.0075, spread * 0.82))\n            if not strong:\n                continue\n\n            max_tags = 4 if group_id == "all" else 2\n            cutoff = max(median + max(0.0025, spread * 0.36), best - (0.020 if group_id == "all" else 0.012))\n            emitted = 0\n            for tag, score in candidates:\n                if emitted >= max_tags or score < cutoff:\n                    break\n                key = tag.casefold()\n                if key in selected_keys:\n                    continue\n                selected_keys.add(key)\n                selected.append(tag)\n                emitted += 1\n\n        if selected:\n            return selected[:12]\n\n        usable = [row for row in fallback_groups if row[1]]\n        if not usable:\n            return []\n        usable.sort(key=lambda row: (row[0] == "all", row[2] / max(0.001, row[3])), reverse=True)\n        _, candidates, _, _ = usable[0]\n        return [candidates[0][0]] if candidates else []\n\n'''
+          text = text[:start] + replacement + text[end:]
+
+          old = '''    def manager_init(self, store):\n        original_manager_init(self, store)\n        assignments = ManagedTagAssignments(store.root)\n        store._ai_managed_tag_store = assignments\n        reconciler = AITagReconciler(self, store, assignments, raw_set_tags)\n        self._ai_tag_reconciler = reconciler\n        store._ai_tag_reconciler = reconciler\n\n'''
+          new = '''    def manager_init(self, store):\n        original_manager_init(self, store)\n        assignments = ManagedTagAssignments(store.root)\n        store._ai_managed_tag_store = assignments\n        reconciler = AITagReconciler(self, store, assignments, raw_set_tags)\n        self._ai_tag_reconciler = reconciler\n        store._ai_tag_reconciler = reconciler\n\n        def reconcile_existing_index():\n            for _ in range(50):\n                if self.stop.wait(0.20):\n                    return\n                settings_store = getattr(store, "_ai_settings_store", None)\n                if settings_store is None:\n                    continue\n                try:\n                    settings = settings_store.snapshot()\n                    if settings.get("aiOptIn", False):\n                        reconciler.reconcile_all()\n                except Exception as exc:\n                    with reconciler.lock:\n                        reconciler.last_error = f"startup reconcile: {exc}"\n                return\n\n        threading.Thread(target=reconcile_existing_index, name="LocalHubAITagStartupSync", daemon=True).start()\n\n'''
+          if old not in text:
+              raise SystemExit('missing manager_init anchor')
+          path.write_text(text.replace(old, new, 1), 'utf-8')
+
+          path = Path('tools/smoke_launcher.py')
+          text = path.read_text('utf-8')
+          old = '''        assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"\n        assert "/ai_first_run.js" in html and "/ai_first_run.css" in html, "AI first-run assets are not injected"\n'''
+          new = '''        assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"\n        assert "/ai_tag_live_sync.js" in html, "AI Tag live-sync asset is not injected"\n        assert "/ai_first_run.js" in html and "/ai_first_run.css" in html, "AI first-run assets are not injected"\n'''
+          if old not in text:
+              raise SystemExit('missing smoke launcher asset anchor')
+          text = text.replace(old, new, 1)
+          marker = 'print("launcher lifecycle, backend/browser privacy, offline onboarding, Tag navigation, and balanced AI smoke test passed")\n'
+          guard = '''\nfrom ai_tag_sync_support import AITagReconciler\n_test_settings = {"groups": [{"id":"all","enabled":True,"tags":[{"tag":"室内"},{"tag":"户外"},{"tag":"夜晚"}]}]}\nassert AITagReconciler._select([("室内",0.31),("户外",0.27),("夜晚",0.25)], _test_settings), "AI Tag selector returned an empty result for a separated group"\n\n'''
+          if guard.strip() not in text:
+              if marker not in text:
+                  raise SystemExit('missing smoke launcher print anchor')
+              text = text.replace(marker, guard + marker, 1)
+          path.write_text(text, 'utf-8')
+          PY
+
+          python -m py_compile ai_center_support.py ai_tag_sync_support.py tools/smoke_launcher.py
+          node --check library_experience.js
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ai_center_support.py ai_tag_sync_support.py library_experience.js tools/smoke_launcher.py
+          git commit -m 'fix: reconcile indexed videos into live AI tags'
+          git push origin HEAD:fix/tray-lifecycle-2.4.1

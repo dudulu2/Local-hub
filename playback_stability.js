@@ -6,6 +6,7 @@
   const viewer = $('#viewer');
   const stage = $('#viewerStage');
   const pathNode = $('#viewerPath');
+  const diagnostics = $('#mediaDiagnostics');
   const compatBtn = $('#compatBtn');
   const notice = $('#playerNotice');
   const noticeTitle = $('#playerNoticeTitle');
@@ -31,6 +32,16 @@
     compatBtn?.classList.add('recommended');
   }
 
+  function hideInitialAnalysisNotice() {
+    // smart_ui starts safe browser-native files immediately while probing in the
+    // background. The diagnostic probe must never become a visual blocker for a
+    // source that Chromium is already loading. Real playback errors use different
+    // notice titles and are therefore left untouched.
+    if (notice && (noticeTitle?.textContent || '').trim() === '正在分析媒体') {
+      notice.classList.add('hidden');
+    }
+  }
+
   function resetWatchdog() {
     lastMediaTime = Number(video.currentTime) || 0;
     lastWallTime = performance.now();
@@ -46,6 +57,91 @@
     unstableNotifiedAt = now;
     try { video.pause(); } catch {}
     showPassiveNotice('浏览器播放时间轴不稳定', `${reason}。建议使用“兼容播放”或系统播放器，LocalHub 不会自动启动后台转码。`);
+  }
+
+  // ----- portrait / rotation-safe fitting ---------------------------------
+  // smart_ui already performs the only authoritative FFmpeg probe. This layer
+  // consumes the dimensions already rendered in #mediaDiagnostics and falls back
+  // to Chromium's intrinsic dimensions. It never starts another probe process.
+  let diagnosticGeometry = null;
+  let intrinsicGeometry = null;
+
+  function geometry(width, height, source) {
+    width = Number(width) || 0;
+    height = Number(height) || 0;
+    if (!width || !height) return null;
+    return {width, height, source, portrait: height > width * 1.08};
+  }
+
+  function clearVideoBox() {
+    for (const property of ['width', 'height', 'max-width', 'max-height', 'aspect-ratio']) {
+      video.style.removeProperty(property);
+    }
+  }
+
+  function chooseGeometry() {
+    const a = diagnosticGeometry;
+    const b = intrinsicGeometry;
+    if (a && b && a.portrait !== b.portrait) {
+      // When container rotation metadata and Chromium's coded dimensions disagree,
+      // prefer the portrait interpretation. contain then letterboxes safely rather
+      // than cropping real image content.
+      return a.portrait ? a : b;
+    }
+    return a || b || null;
+  }
+
+  function fitVideoBox() {
+    const chosen = chooseGeometry();
+    if (!viewer.open || !chosen) return;
+
+    const stageWidth = stage.clientWidth || 0;
+    const stageHeight = stage.clientHeight || 0;
+    if (!stageWidth || !stageHeight) return;
+
+    const scale = Math.min(stageWidth / chosen.width, stageHeight / chosen.height);
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    const fittedWidth = Math.max(1, Math.floor(chosen.width * scale));
+    const fittedHeight = Math.max(1, Math.floor(chosen.height * scale));
+
+    viewer.classList.toggle('lh-player-portrait', chosen.portrait);
+    viewer.classList.toggle('lh-player-landscape', !chosen.portrait);
+    stage.classList.toggle('lh-stage-portrait', chosen.portrait);
+    stage.style.setProperty('--lh-media-aspect', `${chosen.width}/${chosen.height}`);
+
+    video.style.setProperty('width', `${fittedWidth}px`, 'important');
+    video.style.setProperty('height', `${fittedHeight}px`, 'important');
+    video.style.setProperty('max-width', '100%', 'important');
+    video.style.setProperty('max-height', '100%', 'important');
+    video.style.setProperty('aspect-ratio', `${chosen.width} / ${chosen.height}`, 'important');
+    video.style.setProperty('object-fit', 'contain', 'important');
+    video.style.setProperty('object-position', 'center center', 'important');
+
+    requestAnimationFrame(() => {
+      const current = chooseGeometry();
+      if (!viewer.open || !current) return;
+      const sw = stage.clientWidth || 0;
+      const sh = stage.clientHeight || 0;
+      if (!sw || !sh) return;
+      const nextScale = Math.min(sw / current.width, sh / current.height);
+      if (!Number.isFinite(nextScale) || nextScale <= 0) return;
+      video.style.setProperty('width', `${Math.max(1, Math.floor(current.width * nextScale))}px`, 'important');
+      video.style.setProperty('height', `${Math.max(1, Math.floor(current.height * nextScale))}px`, 'important');
+    });
+  }
+
+  function readDiagnosticGeometry() {
+    const text = (diagnostics?.textContent || '').trim();
+    const match = text.match(/(\d{2,5})\s*[×x]\s*(\d{2,5})/i);
+    diagnosticGeometry = match ? geometry(match[1], match[2], 'diagnostics') : null;
+    fitVideoBox();
+  }
+
+  function readIntrinsicGeometry() {
+    if (video.videoWidth && video.videoHeight) {
+      intrinsicGeometry = geometry(video.videoWidth, video.videoHeight, 'intrinsic');
+      fitVideoBox();
+    }
   }
 
   // Normal web-player interaction. No media source mutation happens here.
@@ -65,33 +161,44 @@
     else stage.requestFullscreen?.();
   });
 
-  function applyOrientation(width, height) {
-    width = Number(width) || 0;
-    height = Number(height) || 0;
-    if (!width || !height) return;
-    const portrait = height > width * 1.08;
-    viewer.classList.toggle('lh-player-portrait', portrait);
-    viewer.classList.toggle('lh-player-landscape', !portrait);
-    stage.classList.toggle('lh-stage-portrait', portrait);
-    stage.style.setProperty('--lh-media-aspect', `${width}/${height}`);
-  }
-
-  function fitIntrinsic() {
-    if (video.videoWidth && video.videoHeight) {
-      applyOrientation(video.videoWidth, video.videoHeight);
-    }
-  }
-
+  video.addEventListener('loadstart', hideInitialAnalysisNotice);
   video.addEventListener('loadedmetadata', () => {
-    fitIntrinsic();
-    requestAnimationFrame(fitIntrinsic);
+    hideInitialAnalysisNotice();
+    readIntrinsicGeometry();
+    readDiagnosticGeometry();
     resetWatchdog();
   });
-  video.addEventListener('loadeddata', fitIntrinsic);
-  video.addEventListener('resize', fitIntrinsic);
+  video.addEventListener('loadeddata', () => {
+    hideInitialAnalysisNotice();
+    readIntrinsicGeometry();
+    fitVideoBox();
+  });
+  video.addEventListener('resize', () => {
+    readIntrinsicGeometry();
+    fitVideoBox();
+  });
   video.addEventListener('seeking', () => { lastSeekAt = performance.now(); });
   video.addEventListener('seeked', resetWatchdog);
   video.addEventListener('emptied', resetWatchdog);
+
+  new MutationObserver(() => {
+    diagnosticGeometry = null;
+    intrinsicGeometry = null;
+    clearVideoBox();
+  }).observe(pathNode, {subtree:true, childList:true, characterData:true});
+
+  if (diagnostics) {
+    new MutationObserver(readDiagnosticGeometry).observe(
+      diagnostics,
+      {subtree:true, childList:true, characterData:true}
+    );
+  }
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => fitVideoBox()).observe(stage);
+  } else {
+    window.addEventListener('resize', fitVideoBox);
+  }
 
   // Runtime guard only OBSERVES playback. It never changes src and never starts
   // FFmpeg. Two clear timestamp jumps in a short window pause playback and offer
@@ -126,8 +233,6 @@
     const now = performance.now();
     stalls.push(now);
     stalls = stalls.filter(t => now - t < 9000);
-    // A single buffering event is normal. Repeated events are only surfaced as
-    // a recommendation; they do not trigger compatibility work automatically.
     if (stalls.length >= 5) {
       stalls = [];
       markUnstable('浏览器连续多次等待视频数据');
@@ -151,9 +256,13 @@
 
   viewer.addEventListener('close', () => {
     const path = (pathNode.textContent || '').trim();
+    diagnosticGeometry = null;
+    intrinsicGeometry = null;
+    clearVideoBox();
     resetWatchdog();
     viewer.classList.remove('lh-player-portrait','lh-player-landscape');
     stage.classList.remove('lh-stage-portrait');
+    stage.style.removeProperty('--lh-media-aspect');
     cancelCompat(path);
     clearRecommendationHover();
   });
@@ -236,5 +345,108 @@
     const card = event.target.closest?.('.v23-rec-card');
     if (!card || card.contains(event.relatedTarget)) return;
     if (rec?.card === card) clearRecommendationHover(card);
+  });
+})();
+
+// LH_PORTRAIT_HARD_FIT_V2
+(() => {
+  'use strict';
+  const viewer = document.querySelector('#viewer');
+  const stage = document.querySelector('#viewerStage');
+  const video = document.querySelector('#videoPlayer');
+  const diagnostics = document.querySelector('#mediaDiagnostics');
+  const pathNode = document.querySelector('#viewerPath');
+  if (!viewer || !stage || !video || !pathNode) return;
+
+  let hardApplied = false;
+  let scheduled = 0;
+
+  function diagnosticGeometry() {
+    const text = (diagnostics?.textContent || '').trim();
+    const match = text.match(/(\d{2,5})\s*[×x]\s*(\d{2,5})/i);
+    if (!match) return null;
+    const width = Number(match[1]) || 0;
+    const height = Number(match[2]) || 0;
+    return width && height ? {width, height} : null;
+  }
+
+  function intrinsicGeometry() {
+    const width = Number(video.videoWidth) || 0;
+    const height = Number(video.videoHeight) || 0;
+    return width && height ? {width, height} : null;
+  }
+
+  function clearHardFit() {
+    if (!hardApplied) return;
+    hardApplied = false;
+    stage.classList.remove('lh-hard-portrait');
+    for (const prop of ['position','left','top','transform','margin','min-width','min-height']) video.style.removeProperty(prop);
+    for (const prop of ['width','height','max-width','max-height','aspect-ratio','object-fit','object-position']) video.style.removeProperty(prop);
+  }
+
+  function applyHardPortrait() {
+    scheduled = 0;
+    if (!viewer.open) return;
+    const diagnostic = diagnosticGeometry();
+    const intrinsic = intrinsicGeometry();
+    const g = diagnostic || intrinsic;
+    if (!g || g.height <= g.width * 1.08) return;
+
+    const widthAvailable = Math.max(1, stage.clientWidth || 0);
+    const heightAvailable = Math.max(1, stage.clientHeight || 0);
+    if (widthAvailable <= 1 || heightAvailable <= 1) return;
+
+    const scale = Math.min(widthAvailable / g.width, heightAvailable / g.height);
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    const fittedWidth = Math.max(1, Math.floor(g.width * scale));
+    const fittedHeight = Math.max(1, Math.floor(g.height * scale));
+
+    hardApplied = true;
+    stage.classList.add('lh-hard-portrait');
+    stage.style.setProperty('position', 'relative', 'important');
+    stage.style.setProperty('overflow', 'hidden', 'important');
+    video.style.setProperty('position', 'absolute', 'important');
+    video.style.setProperty('left', '50%', 'important');
+    video.style.setProperty('top', '50%', 'important');
+    video.style.setProperty('transform', 'translate(-50%, -50%)', 'important');
+    video.style.setProperty('margin', '0', 'important');
+    video.style.setProperty('min-width', '0', 'important');
+    video.style.setProperty('min-height', '0', 'important');
+    video.style.setProperty('width', `${fittedWidth}px`, 'important');
+    video.style.setProperty('height', `${fittedHeight}px`, 'important');
+    video.style.setProperty('max-width', 'none', 'important');
+    video.style.setProperty('max-height', 'none', 'important');
+    video.style.setProperty('aspect-ratio', `${g.width} / ${g.height}`, 'important');
+    video.style.setProperty('object-fit', 'contain', 'important');
+    video.style.setProperty('object-position', 'center center', 'important');
+    stage.dataset.lhPortraitFit = `${g.width}x${g.height}:${fittedWidth}x${fittedHeight}`;
+  }
+
+  function scheduleFit() {
+    if (scheduled) cancelAnimationFrame(scheduled);
+    scheduled = requestAnimationFrame(() => {
+      requestAnimationFrame(applyHardPortrait);
+      setTimeout(applyHardPortrait, 80);
+      setTimeout(applyHardPortrait, 260);
+    });
+  }
+
+  video.addEventListener('loadedmetadata', scheduleFit);
+  video.addEventListener('loadeddata', scheduleFit);
+  video.addEventListener('resize', scheduleFit);
+  if (diagnostics) new MutationObserver(scheduleFit).observe(diagnostics, {subtree:true, childList:true, characterData:true});
+
+  new MutationObserver(() => {
+    clearHardFit();
+    delete stage.dataset.lhPortraitFit;
+    scheduleFit();
+  }).observe(pathNode, {subtree:true, childList:true, characterData:true});
+
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(scheduleFit).observe(stage);
+  else window.addEventListener('resize', scheduleFit);
+
+  viewer.addEventListener('close', () => {
+    clearHardFit();
+    delete stage.dataset.lhPortraitFit;
   });
 })();

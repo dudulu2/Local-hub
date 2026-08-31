@@ -1,0 +1,53 @@
+name: Wire browser privacy guard
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-browser-privacy.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Wire same-origin CSP
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          launcher = Path('launcher.py')
+          text = launcher.read_text('utf-8')
+          if '    import browser_privacy\n' not in text:
+              text = text.replace('    import ai_center_support\n', '    import ai_center_support\n    import browser_privacy\n', 1)
+          if '    browser_privacy.install(server)\n' not in text:
+              text = text.replace(
+                  '    ai_center_support.install(server, auto_tag_support, siglip_support)\n    cleanup_compat_cache(root)\n',
+                  '    ai_center_support.install(server, auto_tag_support, siglip_support)\n    browser_privacy.install(server)\n    cleanup_compat_cache(root)\n',
+                  1,
+              )
+          launcher.write_text(text, 'utf-8')
+
+          spec = Path('LocalHub.spec')
+          text = spec.read_text('utf-8')
+          if "'browser_privacy'" not in text:
+              text = text.replace("        'network_privacy',\n", "        'network_privacy',\n        'browser_privacy',\n", 1)
+          spec.write_text(text, 'utf-8')
+          PY
+          python -m py_compile browser_privacy.py launcher.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add launcher.py LocalHub.spec
+          if git diff --cached --quiet; then
+            echo 'No browser privacy wiring changes needed'
+          else
+            git commit -m 'feat: enforce same-origin browser privacy policy'
+            git push origin HEAD:fix/tray-lifecycle-2.4.1
+          fi

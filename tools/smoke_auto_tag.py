@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -15,9 +16,23 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import launcher
+import ai_taxonomy_v2
+import ai_settings_support
+from ai_tag_sync_support import AITagReconciler
+import siglip_encoder as siglip_module
 from auto_tag_prompts import DEFAULT_TAG_PROMPTS
 from io_scheduler import IOScheduler
-from siglip_encoder import ENCODER_NAME, HF_REVISION, MODEL_FILES, MODEL_ID, MODEL_LICENSE, TOTAL_DOWNLOAD_BYTES, SiglipModelBundle
+from siglip_encoder import (
+    ENCODER_NAME,
+    HF_REVISION,
+    LOCAL_PACKAGE_DIR,
+    MODEL_FILES,
+    MODEL_ID,
+    MODEL_LICENSE,
+    TOTAL_DOWNLOAD_BYTES,
+    ModelFile,
+    SiglipModelBundle,
+)
 from visual_encoder import FingerprintEncoder
 from visual_index import VisualIndex
 
@@ -61,7 +76,91 @@ def fake_installed_bundle(base: Path) -> Path:
     return model_dir
 
 
+def smoke_offline_install(tmp: Path, root: Path) -> None:
+    original_rows = siglip_module.MODEL_FILES
+    original_total = siglip_module.TOTAL_DOWNLOAD_BYTES
+    old_localappdata = os.environ.get("LOCALAPPDATA")
+    try:
+        payloads = {
+            "vision_model_int8.onnx": b"vision-localhub-test" * 31,
+            "text_model_int8.onnx": b"text-localhub-test" * 37,
+            "spiece.model": b"sentencepiece-localhub-test" * 7,
+        }
+        tiny_rows = tuple(
+            ModelFile(name, name, len(data), hashlib.sha256(data).hexdigest())
+            for name, data in payloads.items()
+        )
+        siglip_module.MODEL_FILES = tiny_rows
+        siglip_module.TOTAL_DOWNLOAD_BYTES = sum(row.size for row in tiny_rows)
+
+        package = root / LOCAL_PACKAGE_DIR
+        package.mkdir(parents=True)
+        for name, data in payloads.items():
+            (package / name).write_bytes(data)
+
+        appdata = tmp / "offline-install-appdata"
+        os.environ["LOCALAPPDATA"] = str(appdata)
+        bundle = SiglipModelBundle(root)
+        before = bundle.status()
+        assert before["installed"] is False
+        assert before["localPackageAvailable"] is True
+        assert before["source"] == "offline-package"
+
+        bundle.start_install()
+        assert bundle.thread is not None
+        bundle.thread.join(timeout=5.0)
+        assert not bundle.thread.is_alive()
+        after = bundle.status()
+        assert after["installed"] is True, after
+        assert after["error"] == "", after
+        assert after["downloadedBytes"] == siglip_module.TOTAL_DOWNLOAD_BYTES
+        assert not package.exists(), "verified portable model package should be deleted after installation"
+        assert (bundle.model_dir / "manifest.json").exists()
+        assert bundle.ui_dismissed() is False
+        bundle.set_ui_dismissed(True)
+        assert bundle.ui_dismissed() is True
+    finally:
+        siglip_module.MODEL_FILES = original_rows
+        siglip_module.TOTAL_DOWNLOAD_BYTES = original_total
+        if old_localappdata is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_localappdata
+
+
 def main() -> None:
+    # Professional built-ins all have enough semantic granularity for a useful
+    # within-group competition. Old v1 settings upgrade without losing opt-ins.
+    assert all(len(group["tags"]) >= 20 for group in ai_taxonomy_v2.PROFESSIONAL_GROUPS)
+    legacy_sparse_v2 = ai_settings_support.normalize_settings({
+        "version": 2, "aiOptIn": True, "autoAnalyzeLibrary": True,
+        "groups": [
+            {"id":"all", "name":"全部视频", "enabled":True, "tags":[{"tag":f"旧基础{i}", "prompts":[f"legacy base {i}"]} for i in range(8)]},
+            {"id":"study", "name":"学习", "enabled":True, "tags":[{"tag":f"旧学习{i}", "prompts":[f"legacy study {i}"]} for i in range(7)]},
+        ],
+    })
+    legacy_builtin = {g["id"]: g for g in legacy_sparse_v2["groups"] if g.get("id") in {row["id"] for row in ai_taxonomy_v2.PROFESSIONAL_GROUPS}}
+    assert len(legacy_builtin["study"]["tags"]) >= 20
+    assert all(len(group["tags"]) >= 20 for group in legacy_builtin.values())
+    migrated = ai_settings_support.normalize_settings({
+        "version": 1,
+        "aiOptIn": True,
+        "groups": [{"id":"adult", "name":"色情", "enabled":True, "tags":[]}],
+    })
+    assert migrated["version"] == 2
+    adult = next(group for group in migrated["groups"] if group["id"] == "adult")
+    assert adult["enabled"] is True and len(adult["tags"]) >= 20
+
+    grouped_settings = {"groups":[
+        {"id":"entertainment","enabled":True,"tags":[{"tag":"直播"},{"tag":"播客"},{"tag":"访谈"},{"tag":"综艺"}]},
+        {"id":"scenery","enabled":True,"tags":[{"tag":"海边"},{"tag":"山地"},{"tag":"森林"},{"tag":"雪景"}]},
+    ]}
+    picked = AITagReconciler._select(
+        [("直播",.31),("播客",.282),("访谈",.274),("综艺",.268),("海边",.201),("山地",.199),("森林",.198),("雪景",.197)],
+        grouped_settings,
+    )
+    assert "直播" in picked and not any(tag in picked for tag in {"海边","山地","森林","雪景"}), picked
+
     scheduler = IOScheduler()
     assert not scheduler.busy()
     scheduler.note(playing=True)
@@ -75,8 +174,9 @@ def main() -> None:
     encoded = FingerprintEncoder().encode_jpeg(stream.getvalue())
     assert encoded and encoded.vector
 
-    with tempfile.TemporaryDirectory(prefix="localhub-autotag-") as tmp:
-        root = Path(tmp) / "media"
+    with tempfile.TemporaryDirectory(prefix="localhub-autotag-") as tmp_text:
+        tmp = Path(tmp_text)
+        root = tmp / "media"
         root.mkdir()
         index = VisualIndex(root)
         prompt_vector = tuple([1.0] + [0.0] * 767)
@@ -84,17 +184,22 @@ def main() -> None:
         assert len(index.text_vector("室内", ENCODER_NAME, "abc")) == 768
         assert not index.text_vector("室内", ENCODER_NAME, "changed")
 
+        # Runtime installation must work entirely from the package beside the EXE
+        # and remove that package only after hashes have been verified.
+        smoke_offline_install(tmp, root)
+
         # First verify the normal no-model state.
         old_localappdata = os.environ.get("LOCALAPPDATA")
-        empty_appdata = Path(tmp) / "empty-appdata"
+        empty_appdata = tmp / "empty-appdata"
         os.environ["LOCALAPPDATA"] = str(empty_appdata)
         bundle = SiglipModelBundle(root)
         status = bundle.status()
         assert status["totalBytes"] == TOTAL_DOWNLOAD_BYTES == sum(row.size for row in MODEL_FILES)
         assert status["installed"] is False
+        assert status["localPackageAvailable"] is False
 
         # Now emulate a fully installed model without loading any ONNX bytes.
-        installed_appdata = Path(tmp) / "installed-appdata"
+        installed_appdata = tmp / "installed-appdata"
         fake_installed_bundle(installed_appdata)
         os.environ["LOCALAPPDATA"] = str(installed_appdata)
 
@@ -108,7 +213,10 @@ def main() -> None:
                 html = response.read().decode("utf-8")
                 assert "/auto_tag_ui.css" in html and "/auto_tag_ui.js" in html
             with launcher.local_urlopen(base + "/auto_tag_ui.js", timeout=5.0) as response:
-                assert response.status == 200 and b"/api/io/activity" in response.read()
+                ui_source = response.read()
+                assert response.status == 200 and b"/api/io/activity" in ui_source
+                assert b"LocalHub-AI-Model" in ui_source
+                assert b"localhub_ai_hidden" in ui_source
 
             auto = request_json(base, "/api/auto-tag/status")
             assert auto["ok"] is True
@@ -131,6 +239,7 @@ def main() -> None:
             assert model["installed"] is True
             assert model["enabled"] is False
             assert model["totalBytes"] == TOTAL_DOWNLOAD_BYTES
+            assert model["source"] == "offline-package"
         finally:
             httpd.shutdown()
             thread.join(timeout=2.0)
@@ -140,7 +249,7 @@ def main() -> None:
             else:
                 os.environ["LOCALAPPDATA"] = old_localappdata
 
-    print("low-risk Auto Tag explicit opt-in smoke test passed")
+    print("low-risk Auto Tag offline explicit opt-in smoke test passed")
 
 
 if __name__ == "__main__":

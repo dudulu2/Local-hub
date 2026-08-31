@@ -13,7 +13,8 @@ import sys
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from siglip_encoder import EMBED_DIM, SiglipModelBundle, SiglipOnnxEncoder
+from siglip_encoder import EMBED_DIM, LOCAL_PACKAGE_DIR, MODEL_FILES, SiglipModelBundle, SiglipOnnxEncoder
+from tools.prepare_siglip_bundle import download
 from visual_encoder import cosine
 
 
@@ -22,20 +23,29 @@ def norm(vector) -> float:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="localhub-siglip-online-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="localhub-siglip-offline-real-") as tmp:
         temp = Path(tmp)
         if os.name == "nt":
             os.environ["LOCALAPPDATA"] = str(temp / "localapp")
         media_root = temp / "media"
         media_root.mkdir()
 
+        # Network access is used only to prepare the distributor-side portable
+        # package. The runtime installation itself must consume local files only.
+        package = media_root / LOCAL_PACKAGE_DIR
+        package.mkdir()
+        for row in MODEL_FILES:
+            download(row, package / row.name)
+
         bundle = SiglipModelBundle(media_root)
+        assert bundle.status()["localPackageAvailable"] is True
         bundle.start_install()
         assert bundle.thread is not None
         bundle.thread.join(timeout=480)
         status = bundle.status()
         assert not status["installing"], "model install did not finish"
         assert status["installed"], status.get("error") or status
+        assert not package.exists(), "portable package must be removed after verified install"
 
         encoder = SiglipOnnxEncoder(bundle)
         assert encoder.ready(), "onnxruntime/sentencepiece model runtime is not ready"
@@ -66,7 +76,7 @@ def main() -> None:
         assert all(math.isfinite(value) and -1.0 <= value <= 1.0 for value in scores)
 
         encoder.unload_all()
-        print("SigLIP online smoke passed; cosine scores:", [round(value, 4) for value in scores])
+        print("SigLIP offline-package smoke passed; cosine scores:", [round(value, 4) for value in scores])
 
 
 if __name__ == "__main__":

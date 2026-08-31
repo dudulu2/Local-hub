@@ -13,12 +13,18 @@ import traceback
 import urllib.error
 import urllib.request
 import webbrowser
+
+import network_privacy
 from pathlib import Path
 
 HOST = "127.0.0.1"
 PREFERRED_PORT = 8787
 RUNTIME_FILE = "runtime.json"
 ERROR_ALREADY_EXISTS = 183
+
+# LocalHub is intentionally loopback-only. Block DNS and outbound sockets before
+# any server extension or optional AI dependency is initialized.
+network_privacy.install()
 
 # LocalHub talks only to its own loopback HTTP server. Never let Windows proxy,
 # VPN, PAC, or capture-software settings route these requests away from 127.0.0.1.
@@ -66,6 +72,20 @@ def write_server_log(root: Path, message: str) -> Path | None:
         folder = data_dir(root)
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / "server-error.log"
+        with target.open("a", encoding="utf-8") as fp:
+            fp.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}]\n")
+            fp.write(message.rstrip() + "\n")
+        return target
+    except OSError:
+        return None
+
+
+def write_launcher_log(root: Path, message: str) -> Path | None:
+    """Persist non-fatal browser/tray failures without taking the server down."""
+    try:
+        folder = data_dir(root)
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / "launcher-warning.log"
         with target.open("a", encoding="utf-8") as fp:
             fp.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}]\n")
             fp.write(message.rstrip() + "\n")
@@ -181,6 +201,15 @@ def cleanup_compat_cache(root: Path) -> None:
         pass
 
 
+def cleanup_runtime(root: Path) -> None:
+    try:
+        import smart_thumbnail
+        smart_thumbnail.clear_memory_cache()
+    except Exception:
+        pass
+    cleanup_compat_cache(root)
+
+
 def configure_server(root: Path):
     """Install LocalHub extensions exactly once for this process and return server module."""
     import server
@@ -193,6 +222,9 @@ def configure_server(root: Path):
     import io_support
     import auto_tag_support
     import siglip_support
+    import ai_center_support
+    import ai_tag_sync_support
+    import browser_privacy
 
     app_dir = Path(server.APP_DIR)
     server.STATIC_FILES["/ux_enhancements.js"] = app_dir / "ux_enhancements.js"
@@ -202,6 +234,8 @@ def configure_server(root: Path):
     server.STATIC_FILES["/v23_features.css"] = app_dir / "v23_features.css"
     server.STATIC_FILES["/v23_player_fix.js"] = app_dir / "v23_player_fix.js"
     server.STATIC_FILES["/v23_player_fix.css"] = app_dir / "v23_player_fix.css"
+    server.STATIC_FILES["/ai_first_run.js"] = app_dir / "ai_first_run.js"
+    server.STATIC_FILES["/ai_first_run.css"] = app_dir / "ai_first_run.css"
 
     rating_support.install(server, smart_mode)
     catalog_cache.cleanup_legacy_thumbnail_cache(root)
@@ -213,6 +247,9 @@ def configure_server(root: Path):
     io_support.install(server)
     auto_tag_support.install(server, smart_mode)
     siglip_support.install(server, auto_tag_support)
+    ai_center_support.install(server, auto_tag_support, siglip_support)
+    ai_tag_sync_support.install(server, auto_tag_support, ai_center_support)
+    browser_privacy.install(server)
     cleanup_compat_cache(root)
     return server
 
@@ -247,6 +284,7 @@ def self_test() -> int:
         import recommendation_support
         import auto_tag_support
         import siglip_support
+        import ai_center_support
         import interactive_preview_support
         if not callable(getattr(compat_support, "install", None)):
             return 11
@@ -258,11 +296,14 @@ def self_test() -> int:
             return 14
         if not callable(getattr(interactive_preview_support, "install", None)):
             return 15
+        if not callable(getattr(ai_center_support, "install", None)):
+            return 16
         app_dir = Path(server.APP_DIR)
         for name in (
             "smart_index.html", "smart_ui.css", "smart_ui.js", "ux_enhancements.css", "ux_enhancements.js",
             "move_branding.js", "v23_features.js", "v23_features.css", "v23_player_fix.js", "v23_player_fix.css",
             "auto_tag_ui.js", "auto_tag_ui.css", "playback_stability.js", "playback_stability.css",
+            "ai_center.js", "ai_center.css", "ai_first_run.js", "ai_first_run.css", "ai_tag_live_sync.js",
         ):
             if not (app_dir / name).exists():
                 return 20
@@ -277,7 +318,7 @@ def self_test() -> int:
                 return 30
             with local_urlopen(base + "/", timeout=3.0) as response:
                 body = response.read()
-                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body:
+                if response.status != 200 or b"LocalHub" not in body or b"playback_stability.js" not in body or b"ai_center.js" not in body or b"ai_first_run.js" not in body:
                     return 31
             with local_urlopen(base + "/api/smart/home", timeout=5.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -315,31 +356,22 @@ def create_tray_image():
     return image
 
 
-def run_tray(root: Path, url: str, httpd) -> None:
+def run_tray(root: Path, url: str, shutdown_event: threading.Event) -> None:
     import pystray
 
     def open_library(icon=None, item=None):
-        webbrowser.open(url)
+        open_browser(root, url)
 
     def open_folder(icon=None, item=None):
         if os.name == "nt":
             os.startfile(root)  # type: ignore[attr-defined]
 
     def quit_app(icon, item=None):
-        clear_runtime(root)
+        shutdown_event.set()
         try:
-            import smart_thumbnail
-            smart_thumbnail.clear_memory_cache()
+            icon.stop()
         except Exception:
             pass
-        cleanup_compat_cache(root)
-        try:
-            httpd.shutdown()
-            httpd.server_close()
-        except Exception:
-            pass
-        icon.stop()
-        os._exit(0)
 
     menu = pystray.Menu(
         pystray.MenuItem("打开 LocalHub", open_library, default=True),
@@ -349,6 +381,51 @@ def run_tray(root: Path, url: str, httpd) -> None:
     )
     icon = pystray.Icon("LocalHub", create_tray_image(), "LocalHub · 本地媒体库", menu)
     icon.run()
+
+
+def open_browser(root: Path, url: str) -> bool:
+    """Best-effort browser launch. Browser integration must never own server lifetime."""
+    if os.environ.get("LOCALHUB_NO_BROWSER", "").strip() == "1":
+        return False
+    try:
+        opened = bool(webbrowser.open(url))
+        if not opened:
+            write_launcher_log(root, f"Browser launch returned false for {url}")
+        return opened
+    except Exception as exc:
+        detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        write_launcher_log(root, "BROWSER FAILURE\n" + detail)
+        return False
+
+
+def start_tray_thread(root: Path, url: str, shutdown_event: threading.Event) -> threading.Thread:
+    """Start the optional tray UI without allowing it to terminate the core server."""
+    def tray_worker() -> None:
+        failure: str | None = None
+        try:
+            run_tray(root, url, shutdown_event)
+        except BaseException as exc:
+            failure = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            write_launcher_log(root, "TRAY FAILURE\n" + failure)
+        finally:
+            if not shutdown_event.is_set():
+                if failure is None:
+                    write_launcher_log(
+                        root,
+                        "TRAY LOOP ENDED UNEXPECTEDLY\n"
+                        "The tray UI returned without an Exit request. LocalHub will keep serving in the background.",
+                    )
+
+    thread = threading.Thread(target=tray_worker, name="LocalHubTray", daemon=True)
+    thread.start()
+    return thread
+
+
+def wait_for_shutdown(server_thread: threading.Thread, shutdown_event: threading.Event) -> None:
+    """Keep the process alive for the HTTP server even if the tray UI disappears."""
+    while not shutdown_event.wait(0.5):
+        if not server_thread.is_alive():
+            raise RuntimeError("HTTP 服务线程意外退出。")
 
 
 def main() -> int:
@@ -361,12 +438,13 @@ def main() -> int:
     if already_running:
         url = wait_existing_url(root)
         if url:
-            webbrowser.open(url)
+            open_browser(root, url)
             return 0
         show_error("LocalHub", "LocalHub 已经在启动中，请稍后再试。")
         return 0
 
     httpd = None
+    shutdown_event = threading.Event()
     try:
         httpd, port = create_http_server(root)
         url = f"http://{HOST}:{port}/"
@@ -386,11 +464,13 @@ def main() -> int:
         try:
             (data_dir(root) / "startup-error.log").unlink(missing_ok=True)
             (data_dir(root) / "server-error.log").unlink(missing_ok=True)
+            (data_dir(root) / "launcher-warning.log").unlink(missing_ok=True)
         except OSError:
             pass
 
-        webbrowser.open(url)
-        run_tray(root, url, httpd)
+        open_browser(root, url)
+        start_tray_thread(root, url, shutdown_event)
+        wait_for_shutdown(thread, shutdown_event)
         return 0
     except Exception as exc:
         detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
@@ -408,6 +488,7 @@ def main() -> int:
                 httpd.server_close()
             except Exception:
                 pass
+        cleanup_runtime(root)
         if mutex_handle and os.name == "nt":
             ctypes.windll.kernel32.CloseHandle(mutex_handle)
 

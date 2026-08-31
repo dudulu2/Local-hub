@@ -42,10 +42,15 @@ def main() -> None:
         catalog = Catalog(store)
         assert catalog.ready.wait(10), "catalog did not become ready"
 
-        home = catalog.home()
-        assert 13 <= len(home) <= 15, len(home)
-        assert all(item["kind"] == "video" for item in home)
-        assert sum(1 for item in home if not item["folder"]) == 5
+        # Home is now a paged random browsing sequence. With only five videos
+        # directly beside LocalHub, page one keeps all five and fills the rest
+        # from subfolders up to 15.
+        home = catalog.home(offset=0, limit=15, seed="initial-home")
+        assert home["total"] == 17, home
+        assert len(home["items"]) == 15, home
+        assert all(item["kind"] == "video" for item in home["items"])
+        assert sum(1 for item in home["items"] if not item["folder"]) == 5
+        assert home["hasMore"] is True
 
         folder = catalog.list_view("folder", "collection-00", limit=30)
         kinds = [item["kind"] for item in folder["items"]]
@@ -66,6 +71,62 @@ def main() -> None:
 
         found = catalog.list_view("search", q="collection-03", limit=30)
         assert found["total"] >= 1
+
+        # Existing media is the launch baseline and must never appear as "new".
+        new_before = catalog.list_view("new", limit=30)
+        assert new_before["total"] == 0, new_before
+
+        # Dropping a video into an existing or new folder should be discovered by
+        # the cheap path watcher, then promoted through a real catalog refresh.
+        touch(root / "incoming" / "fresh-video.mp4", 2048)
+        catalog.last_change_check = 0.0
+        new_after = catalog.list_view("new", limit=30)
+        assert new_after["catalogChanged"] is True, new_after
+        assert new_after["total"] == 1, new_after
+        assert new_after["items"][0]["id"] == "incoming/fresh-video.mp4"
+        assert catalog.stats()["videos"] == 18
+        assert any(row["path"] == "incoming" for row in catalog.folders())
+
+        # Folder navigation is a tree, not a list grouped globally by depth.
+        # A child must be emitted immediately after its real parent before the
+        # next unrelated root folder, otherwise the sidebar visually nests it
+        # under the wrong root.
+        touch(root / "Videos" / "上课" / "lesson.mp4", 1500)
+        touch(root / "亚洲" / "asia.mp4", 1500)
+        catalog.refresh(wait=True, track_new=False)
+        folder_paths = [row["path"] for row in catalog.folders()]
+        videos_index = folder_paths.index("Videos")
+        lesson_index = folder_paths.index("Videos/上课")
+        asia_index = folder_paths.index("亚洲")
+        assert videos_index < lesson_index < asia_index, folder_paths
+        assert catalog.stats()["videos"] == 20
+
+        # A manual refresh is also used after LocalHub rename/move operations.
+        # Path changes from those workflows must not look like newly copied media.
+        touch(root / "manual-only.mp4", 1900)
+        catalog.refresh(wait=True, track_new=False)
+        manual_view = catalog.list_view("new", limit=30)
+        assert manual_view["total"] == 1, manual_view
+        assert all(item["id"] != "manual-only.mp4" for item in manual_view["items"])
+        assert catalog.stats()["videos"] == 21
+
+        # Home browsing is a stable random sequence: 15 per page, no repeats
+        # until every video has appeared. Reusing the same seed makes Back/Next
+        # deterministic instead of reshuffling the page under the user.
+        home_round_one = catalog.home(offset=0, limit=15, seed="smoke-home")
+        home_round_two = catalog.home(offset=15, limit=15, seed="smoke-home")
+        assert len(home_round_one["items"]) == 15
+        first_ids = [row["id"] for row in home_round_one["items"]]
+        second_ids = [row["id"] for row in home_round_two["items"]]
+        assert not (set(first_ids) & set(second_ids)), (first_ids, second_ids)
+        assert len(first_ids + second_ids) == len(set(first_ids + second_ids)) == 21
+        repeat_first = catalog.home(offset=0, limit=15, seed="smoke-home")
+        assert [row["id"] for row in repeat_first["items"]] == first_ids
+
+        # Re-polling does not duplicate the same discovery.
+        catalog.last_change_check = 0.0
+        new_again = catalog.list_view("new", limit=30)
+        assert new_again["total"] == 1, new_again
 
         deadline = time.monotonic() + 5
         while catalog.building and time.monotonic() < deadline:

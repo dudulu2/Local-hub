@@ -1,0 +1,120 @@
+name: Wire offline AI onboarding
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-first-run-ai.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+      - name: Wire first-run AI and loopback-only privacy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          launcher = Path('launcher.py')
+          text = launcher.read_text('utf-8')
+          if 'import network_privacy' not in text:
+              text = text.replace('import webbrowser\n', 'import webbrowser\n\nimport network_privacy\n', 1)
+          if 'network_privacy.install()' not in text:
+              text = text.replace('ERROR_ALREADY_EXISTS = 183\n', 'ERROR_ALREADY_EXISTS = 183\n\n# LocalHub is intentionally loopback-only. Block DNS and outbound sockets before\n# any server extension or optional AI dependency is initialized.\nnetwork_privacy.install()\n', 1)
+          static_anchor = '    server.STATIC_FILES["/v23_player_fix.css"] = app_dir / "v23_player_fix.css"\n'
+          static_add = static_anchor + '    server.STATIC_FILES["/ai_first_run.js"] = app_dir / "ai_first_run.js"\n    server.STATIC_FILES["/ai_first_run.css"] = app_dir / "ai_first_run.css"\n'
+          if '/ai_first_run.js' not in text:
+              text = text.replace(static_anchor, static_add, 1)
+          if '"ai_first_run.js", "ai_first_run.css"' not in text:
+              text = text.replace('            "ai_center.js", "ai_center.css",\n', '            "ai_center.js", "ai_center.css", "ai_first_run.js", "ai_first_run.css",\n', 1)
+          if 'b"ai_first_run.js" not in body' not in text:
+              text = text.replace(
+                  'or b"ai_center.js" not in body:',
+                  'or b"ai_center.js" not in body or b"ai_first_run.js" not in body:',
+                  1,
+              )
+          launcher.write_text(text, 'utf-8')
+
+          spec = Path('LocalHub.spec')
+          text = spec.read_text('utf-8')
+          if "('ai_first_run.css', '.')" not in text:
+              text = text.replace(
+                  "        ('ai_center.js', '.'),\n",
+                  "        ('ai_center.js', '.'),\n        ('ai_first_run.css', '.'),\n        ('ai_first_run.js', '.'),\n",
+                  1,
+              )
+          if "'network_privacy'" not in text:
+              text = text.replace("        'ai_balanced_siglip',\n", "        'ai_balanced_siglip',\n        'network_privacy',\n", 1)
+          # Deliberately do not add any ONNX/model files to datas: the AI model\n          # remains a separate LocalHub-AI-Model folder beside LocalHub.exe.
+          spec.write_text(text, 'utf-8')
+
+          settings = Path('ai_settings_support.py')
+          text = settings.read_text('utf-8')
+          if '"onboardingCompleted"' not in text.split('DEFAULT_SETTINGS =',1)[1].split('}',1)[0]:
+              text = text.replace(
+                  '    "showViewerButton": True,\n',
+                  '    "showViewerButton": True,\n    "onboardingCompleted": False,\n    "aiOptIn": False,\n', 1)
+          normalize_anchor = '        "showViewerButton": bool(source.get("showViewerButton", DEFAULT_SETTINGS["showViewerButton"])),\n'
+          if '"onboardingCompleted": bool(source.get(' not in text:
+              text = text.replace(
+                  normalize_anchor,
+                  normalize_anchor + '        "onboardingCompleted": bool(source.get("onboardingCompleted", DEFAULT_SETTINGS["onboardingCompleted"])),\n        "aiOptIn": bool(source.get("aiOptIn", DEFAULT_SETTINGS["aiOptIn"])),\n',
+                  1,
+              )
+          settings.write_text(text, 'utf-8')
+
+          center = Path('ai_center_support.py')
+          text = center.read_text('utf-8')
+          old_reset = '                    if action == "reset":\n                        saved = settings_store.save(ai_settings_support.DEFAULT_SETTINGS)\n'
+          new_reset = '                    if action == "reset":\n                        current = settings_store.snapshot()\n                        defaults = dict(ai_settings_support.DEFAULT_SETTINGS)\n                        defaults["onboardingCompleted"] = current.get("onboardingCompleted", True)\n                        defaults["aiOptIn"] = current.get("aiOptIn", False)\n                        saved = settings_store.save(defaults)\n'
+          if old_reset in text:
+              text = text.replace(old_reset, new_reset, 1)
+          center.write_text(text, 'utf-8')
+
+          center_js = Path('ai_center.js')
+          text = center_js.read_text('utf-8')
+          collect_anchor = "      showViewerButton: !!$('#aiViewerButton')?.checked,\n"
+          if 'onboardingCompleted: settingsCache?.onboardingCompleted' not in text:
+              text = text.replace(
+                  collect_anchor,
+                  collect_anchor + '      onboardingCompleted: settingsCache?.onboardingCompleted !== false,\n      aiOptIn: settingsCache?.aiOptIn === true,\n',
+                  1,
+              )
+          center_js.write_text(text, 'utf-8')
+
+          index = Path('smart_index.html')
+          text = index.read_text('utf-8')
+          if '<link rel="stylesheet" href="/ai_first_run.css">' not in text:
+              text = text.replace('  <link rel="stylesheet" href="/v23_player_fix.css">\n', '  <link rel="stylesheet" href="/v23_player_fix.css">\n  <link rel="stylesheet" href="/ai_first_run.css">\n', 1)
+          if '<script src="/ai_first_run.js"></script>' not in text:
+              text = text.replace('  <script src="/v23_player_fix.js"></script>\n', '  <script src="/v23_player_fix.js"></script>\n  <script src="/ai_first_run.js"></script>\n', 1)
+          index.write_text(text, 'utf-8')
+          PY
+
+          python -m py_compile network_privacy.py ai_settings_support.py ai_center_support.py launcher.py
+          node --check ai_first_run.js
+          node --check ai_center.js
+          python - <<'PY'
+          from pathlib import Path
+          spec = Path('LocalHub.spec').read_text('utf-8')
+          assert 'LocalHub-AI-Model' not in spec, 'AI model files must stay outside the EXE'
+          html = Path('smart_index.html').read_text('utf-8')
+          assert '/ai_first_run.js' in html and '/ai_first_run.css' in html
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add launcher.py LocalHub.spec ai_settings_support.py ai_center_support.py ai_center.js smart_index.html
+          if git diff --cached --quiet; then
+            echo 'No first-run wiring changes needed'
+          else
+            git commit -m 'feat: add offline first-run AI onboarding and network guard'
+            git push origin HEAD:fix/tray-lifecycle-2.4.1
+          fi

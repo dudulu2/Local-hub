@@ -1,0 +1,163 @@
+name: Repair automatic AI Tag runtime
+
+on:
+  push:
+    branches: [fix/tray-lifecycle-2.4.1]
+    paths:
+      - '.github/workflows/assistant-fix-autotag-runtime-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tray-lifecycle-2.4.1
+          fetch-depth: 0
+
+      - name: Repair runtime taxonomy migration and automatic Tag application
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text('utf-8')
+              if old not in text:
+                  raise SystemExit(f'missing anchor in {path}: {old[:100]!r}')
+              p.write_text(text.replace(old, new, count), 'utf-8')
+
+          # 1) Professional built-in groups must be reconciled even when an old
+          #    sparse settings file already says version=2. This is the exact
+          #    migration hole that left existing users on 8/7/7/7/7/5 tags.
+          replace(
+              'ai_taxonomy_v2.py',
+              '''    if version >= 2:\n        return source\n\n    old_groups = source.get("groups") if isinstance(source.get("groups"), list) else []\n''',
+              '''    # Do not return early for version=2. Early LocalHub 2.x builds\n    # already wrote version=2 while still carrying the tiny starter taxonomy.\n    # Reconcile built-in groups on every load so old installations receive the\n    # professional >=20-tag baseline while preserving enabled state, edited\n    # prompts, and custom tags/groups.\n    old_groups = source.get("groups") if isinstance(source.get("groups"), list) else []\n'''
+          )
+
+          # 2) Do not auto-start AI for a user who explicitly opted out. When AI
+          #    is opted in, the reconciler will automatically write high-confidence
+          #    tags; no per-video approval is part of the main path.
+          replace(
+              'ai_center_support.py',
+              '''                settings = settings_store.snapshot()\n                if not settings.get("autoAnalyzeLibrary", True):\n                    return\n''',
+              '''                settings = settings_store.snapshot()\n                if not settings.get("aiOptIn", False):\n                    return\n                if not settings.get("autoAnalyzeLibrary", True):\n                    return\n'''
+          )
+          replace(
+              'ai_center_support.py',
+              '''                    if saved.get("autoAnalyzeLibrary", True) and model.get("installed"):\n                        manager.start_library()\n''',
+              '''                    if saved.get("aiOptIn", False) and saved.get("autoAnalyzeLibrary", True) and model.get("installed"):\n                        manager.start_library()\n                    elif not saved.get("aiOptIn", False):\n                        manager.pause_library()\n'''
+          )
+
+          # Add tagged-video and AI-tag-sync status to the AI overview so 100%
+          # visual indexing can no longer masquerade as 100% Tag completion.
+          replace(
+              'ai_center_support.py',
+              '''def _semantic_indexed(manager, siglip_support_module) -> int:\n''',
+              '''def _tagged_videos(store) -> int:\n    try:\n        with store.lock:\n            items = dict(store._metadata.get("items", {}))\n        return sum(1 for row in items.values() if isinstance(row, dict) and isinstance(row.get("tags"), list) and row.get("tags"))\n    except Exception:\n        return 0\n\n\ndef _semantic_indexed(manager, siglip_support_module) -> int:\n'''
+          )
+          replace(
+              'ai_center_support.py',
+              '''                return {\n                    "ok": True,\n                    "settings": settings_store.snapshot(),\n                    "status": status,\n                    "model": model,\n                    "totalVideos": _total_videos(store),\n                    "semanticIndexed": _semantic_indexed(manager, siglip_support_module),\n                }\n''',
+              '''                reconciler = getattr(store, "_ai_tag_reconciler", None)\n                tag_sync = reconciler.status(0) if reconciler is not None else {\n                    "ok": True, "revision": 0, "changed": [], "syncRunning": False,\n                    "syncTotal": 0, "syncDone": 0, "queued": 0, "lastError": "",\n                }\n                return {\n                    "ok": True,\n                    "settings": settings_store.snapshot(),\n                    "status": status,\n                    "model": model,\n                    "totalVideos": _total_videos(store),\n                    "semanticIndexed": _semantic_indexed(manager, siglip_support_module),\n                    "taggedVideos": _tagged_videos(store),\n                    "tagSync": tag_sync,\n                }\n'''
+          )
+
+          # 3) If prompt generation was interrupted by playback, explicitly ask
+          #    the prompt warmer to resume. The worker keeps retrying cached video
+          #    vectors and never requires re-decoding the 182 videos.
+          replace(
+              'ai_tag_sync_support.py',
+              '''            if coverage < 0.97:\n                return None\n''',
+              '''            if coverage < 0.97:\n                try:\n                    warmer = getattr(self.manager, "_start_siglip_prompt_warmup", None)\n                    if callable(warmer):\n                        warmer()\n                except Exception:\n                    pass\n                return None\n'''
+          )
+
+          # 4) AI page: show Tag completion separately, and never repaint a page
+          #    after the user has navigated away from AI Center.
+          replace(
+              'ai_center.js',
+              '''  function renderAiPage(overview) {\n    if (!aiPageActive) return;\n''',
+              '''  function renderAiPage(overview) {\n    if (!aiPageActive || (pageTitle?.textContent || '').trim() !== 'AI 分析') return;\n'''
+          )
+          replace(
+              'ai_center.js',
+              '''    const queued = Math.max(0, Number(status.queued) || 0);\n    const failed = Math.max(0, Number(status.failed) || 0);\n''',
+              '''    const queued = Math.max(0, Number(status.queued) || 0);\n    const failed = Math.max(0, Number(status.failed) || 0);\n    const tagged = Math.max(0, Number(overview.taggedVideos) || 0);\n    const tagSync = overview.tagSync || {};\n    const tagSyncTotal = Math.max(0, Number(tagSync.syncTotal) || 0);\n    const tagSyncDone = Math.max(0, Number(tagSync.syncDone) || 0);\n'''
+          )
+          replace(
+              'ai_center.js',
+              '''          <div class="ai-stat"><strong>${queued}</strong><span>等待分析</span></div>\n          <div class="ai-stat"><strong>${failed}</strong><span>本轮失败</span></div>\n''',
+              '''          <div class="ai-stat"><strong>${tagged}</strong><span>已生成 Tag</span></div>\n          <div class="ai-stat"><strong>${failed}</strong><span>本轮失败</span></div>\n'''
+          )
+          replace(
+              'ai_center.js',
+              '''          <div class="ai-progress-meta"><span>${indexed} / ${total} 个视频</span><span>${percent.toFixed(1)}%</span></div>\n        </div>\n''',
+              '''          <div class="ai-progress-meta"><span>${indexed} / ${total} 个视频</span><span>${percent.toFixed(1)}%</span></div>\n          <div class="ai-progress-meta ai-tag-sync-meta"><span>自动 Tag：${tagSync.syncRunning ? `正在重分类 ${tagSyncDone} / ${tagSyncTotal || total}` : `${tagged} 个视频已有标签`}</span><span>${tagSync.queued ? `队列 ${tagSync.queued}` : ''}</span></div>\n        </div>\n'''
+          )
+          replace(
+              'ai_center.js',
+              '''      body.innerHTML = `<div class="viewer-ai-state">${status?.io?.playing ? '播放中使用低负载结果 · ' : ''}点击 ＋ 接受 Tag，× 表示不符合。</div><div class="viewer-ai-suggestions">${chips}</div><div class="viewer-ai-actions"><button class="ai-btn" data-viewer-ai-action="center">打开 AI 页面</button></div>`;\n''',
+              '''      body.innerHTML = `<div class="viewer-ai-state">高置信 AI Tag 会自动写入视频。${status?.io?.playing ? '播放中使用低负载结果 · ' : ''}下方只是额外候选，可用 ＋ 补充或 × 排除。</div><div class="viewer-ai-suggestions">${chips}</div><div class="viewer-ai-actions"><button class="ai-btn" data-viewer-ai-action="center">打开 AI 页面</button></div>`;\n'''
+          )
+          replace(
+              'ai_center.js',
+              '''  searchInput?.addEventListener('input', () => leaveAiPage(), true);\n''',
+              '''  searchInput?.addEventListener('input', () => leaveAiPage(), true);\n  if (pageTitle) new MutationObserver(() => {\n    if (aiPageActive && (pageTitle.textContent || '').trim() !== 'AI 分析') leaveAiPage();\n  }).observe(pageTitle, {subtree:true, childList:true, characterData:true});\n'''
+          )
+
+          # 5) Tag category empty state reports background Tag reconciliation
+          #    instead of implying the user must manually accept every tag.
+          replace(
+              'library_experience.js',
+              '''      if (!tags.length) {\n        grid.innerHTML = '<div class="tag-category-empty"><strong>还没有标签</strong><span>手工添加 Tag，或等待 AI 分析完成后会自动出现在这里。</span></div>';\n        if (meta) meta.textContent = '';\n        return;\n      }\n''',
+              '''      if (!tags.length) {\n        let sync = null;\n        try {\n          const response = await fetch('/api/ai/tag-sync?since=0', {cache:'no-store'});\n          if (response.ok) sync = await response.json();\n        } catch {}\n        const total = Math.max(0, Number(sync?.syncTotal) || 0);\n        const done = Math.max(0, Number(sync?.syncDone) || 0);\n        const message = sync?.syncRunning\n          ? `AI 正在自动生成标签 ${done} / ${total || '…'}，无需逐个视频确认。`\n          : 'AI Tag 会自动写入视频；如果刚升级词库，后台会直接利用已有视觉索引重新分类。';\n        grid.innerHTML = `<div class="tag-category-empty"><strong>${sync?.syncRunning ? '正在生成标签' : '还没有标签'}</strong><span>${message}</span></div>`;\n        if (meta) meta.textContent = '';\n        return;\n      }\n'''
+          )
+
+          # 6) Regression tests: an already-version-2 sparse install must upgrade
+          #    to >=20 built-in tags; frontend must keep AI navigation isolated.
+          p = Path('tools/smoke_auto_tag.py')
+          text = p.read_text('utf-8')
+          anchor = '''    assert all(len(group["tags"]) >= 20 for group in ai_taxonomy_v2.PROFESSIONAL_GROUPS)\n'''
+          insert = '''    assert all(len(group["tags"]) >= 20 for group in ai_taxonomy_v2.PROFESSIONAL_GROUPS)\n    legacy_v2 = ai_settings_support.normalize_settings({\n        "version": 2,\n        "aiOptIn": True,\n        "autoAnalyzeLibrary": True,\n        "groups": [\n            {"id":"all", "name":"全部视频", "enabled":True, "tags":[{"tag":f"旧基础{i}","prompts":[f"legacy base {i}"]} for i in range(8)]},\n            {"id":"study", "name":"学习", "enabled":True, "tags":[{"tag":f"旧学习{i}","prompts":[f"legacy study {i}"]} for i in range(7)]},\n        ],\n    })\n    builtins = {group["id"]: group for group in legacy_v2["groups"] if group.get("id") in {row["id"] for row in ai_taxonomy_v2.PROFESSIONAL_GROUPS}}\n    assert builtins["study"]["enabled"] is True and len(builtins["study"]["tags"]) >= 20\n    assert all(len(group["tags"]) >= 20 for group in builtins.values())\n'''
+          if 'legacy_v2 = ai_settings_support.normalize_settings' not in text:
+              if anchor not in text: raise SystemExit('smoke auto-tag anchor missing')
+              text = text.replace(anchor, insert, 1)
+              p.write_text(text, 'utf-8')
+
+          p = Path('tools/smoke_frontend_guard.py')
+          text = p.read_text('utf-8')
+          anchor = '''assert "Never leave a legacy root button" in features\n'''
+          insert = '''assert "Never leave a legacy root button" in features\n\nai_center = (ROOT / "ai_center.js").read_text("utf-8")\nlibrary_experience = (ROOT / "library_experience.js").read_text("utf-8")\nassert "pageTitle?.textContent || '').trim() !== 'AI 分析'" in ai_center\nassert "高置信 AI Tag 会自动写入视频" in ai_center\nassert "AI 正在自动生成标签" in library_experience\n'''
+          if '高置信 AI Tag 会自动写入视频' not in text:
+              if anchor not in text: raise SystemExit('frontend guard anchor missing')
+              text = text.replace(anchor, insert, 1)
+              p.write_text(text, 'utf-8')
+
+          # Validate the new modules in the normal Windows build too.
+          p = Path('.github/workflows/build-windows.yml')
+          text = p.read_text('utf-8')
+          old = 'run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py interactive_preview_support.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py io_scheduler.py io_support.py visual_encoder.py visual_index.py auto_tag_prompts.py auto_tag_support.py siglip_encoder.py siglip_support.py tools/smoke_smart.py'
+          new = 'run: python -m py_compile launcher.py server.py smart_mode.py smart_thumbnail.py preview_support.py interactive_preview_support.py media_probe.py compat_support.py rating_support.py recommendation_support.py catalog_cache.py io_scheduler.py io_support.py visual_encoder.py visual_index.py auto_tag_prompts.py auto_tag_support.py siglip_encoder.py siglip_support.py ai_balanced_siglip.py ai_taxonomy_v2.py ai_settings_support.py ai_center_support.py ai_tag_sync_support.py tools/smoke_smart.py'
+          if old in text:
+              text = text.replace(old, new, 1)
+          oldjs = '''          node --check .\\auto_tag_ui.js\n          node --check .\\playback_stability.js\n'''
+          newjs = '''          node --check .\\auto_tag_ui.js\n          node --check .\\playback_stability.js\n          node --check .\\ai_center.js\n          node --check .\\ai_first_run.js\n          node --check .\\ai_tag_live_sync.js\n'''
+          if oldjs in text:
+              text = text.replace(oldjs, newjs, 1)
+          p.write_text(text, 'utf-8')
+          PY
+
+          python -m py_compile ai_taxonomy_v2.py ai_settings_support.py ai_center_support.py ai_tag_sync_support.py tools/smoke_auto_tag.py tools/smoke_frontend_guard.py
+          node --check ai_center.js
+          node --check library_experience.js
+          python tools/smoke_frontend_guard.py
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ai_taxonomy_v2.py ai_center_support.py ai_tag_sync_support.py ai_center.js library_experience.js tools/smoke_auto_tag.py tools/smoke_frontend_guard.py .github/workflows/build-windows.yml
+          git commit -m 'fix: make AI Tag automatic for existing libraries'
+          git push origin HEAD:fix/tray-lifecycle-2.4.1

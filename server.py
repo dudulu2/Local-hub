@@ -339,7 +339,7 @@ def make_handler(store: MediaStore):
             range_header = self.headers.get("Range", "").strip()
             start, end = 0, max(0, total - 1)
             status = HTTPStatus.OK
-            extra = {"Accept-Ranges": "bytes"}
+            extra = {"Accept-Ranges": "bytes", "Content-Disposition": f"inline; filename*=UTF-8\'\'{urllib.parse.quote(file_path.name)}"}
 
             if range_header:
                 match = RANGE_RE.fullmatch(range_header)

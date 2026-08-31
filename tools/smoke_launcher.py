@@ -1,4 +1,7 @@
+import json
+import socket
 import sys
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7,6 +10,37 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import launcher
+import network_privacy
+
+
+# Privacy contract: importing the real launcher must install a process-level
+# loopback-only network guard. External DNS/socket destinations are rejected
+# before any network operation is attempted; localhost remains exercised by the
+# real HTTP-server tests later in this file.
+assert network_privacy.installed(), "loopback-only privacy guard is not installed"
+for external_host in ("example.com", "8.8.8.8"):
+    try:
+        socket.getaddrinfo(external_host, 443)
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError(f"external DNS was not blocked: {external_host}")
+
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.connect(("1.1.1.1", 443))
+except PermissionError:
+    pass
+else:
+    raise AssertionError("external TCP connection was not blocked")
+
+# Distribution contract: the AI weights stay in the separate
+# LocalHub-AI-Model folder and must never be embedded into the one-file EXE.
+spec_text = (REPO_ROOT / "LocalHub.spec").read_text("utf-8")
+assert "LocalHub-AI-Model" not in spec_text, "AI model folder was accidentally embedded into LocalHub.exe"
+first_run_js = (REPO_ROOT / "ai_first_run.js").read_text("utf-8")
+assert "开始 AI 功能" in first_run_js and "aiFirstProgressBar" in first_run_js
+assert "完全离线，不连接互联网" in first_run_js
 
 
 class EmptyCompat:
@@ -57,4 +91,97 @@ with TemporaryDirectory() as tmp:
 
     assert RootCompat.called, "cleanup_root was not called"
 
-print("launcher startup cleanup smoke test passed")
+
+# Regression: a tray backend may return immediately without raising. That must
+# be treated as a non-fatal UI failure; it must not signal the core server to
+# stop. Persist a warning so packaged failures remain diagnosable.
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    shutdown_event = threading.Event()
+    original_run_tray = launcher.run_tray
+
+    try:
+        launcher.run_tray = lambda root, url, event: None
+        tray_thread = launcher.start_tray_thread(root, "http://127.0.0.1:8787/", shutdown_event)
+        tray_thread.join(timeout=2.0)
+
+        assert not tray_thread.is_alive(), "fake tray thread did not return"
+        assert not shutdown_event.is_set(), "unexpected tray return must not stop LocalHub"
+
+        warning_log = root / ".localhub" / "launcher-warning.log"
+        assert warning_log.exists(), "unexpected tray return was not logged"
+        warning_text = warning_log.read_text("utf-8")
+        assert "TRAY LOOP ENDED UNEXPECTEDLY" in warning_text
+    finally:
+        launcher.run_tray = original_run_tray
+
+
+# Browser launch is auxiliary too. A browser integration failure must be logged
+# and reported as False rather than propagating into main server shutdown.
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    original_web_open = launcher.webbrowser.open
+
+    try:
+        def fail_browser(url):
+            raise RuntimeError("simulated browser failure")
+
+        launcher.webbrowser.open = fail_browser
+        assert launcher.open_browser(root, "http://127.0.0.1:8787/") is False
+        warning_log = root / ".localhub" / "launcher-warning.log"
+        assert warning_log.exists(), "browser failure was not logged"
+        assert "BROWSER FAILURE" in warning_log.read_text("utf-8")
+    finally:
+        launcher.webbrowser.open = original_web_open
+
+
+# The real launcher composition must include the dedicated AI Center, its
+# first-run onboarding, persistent Tag-group settings API, and the default
+# balanced background mode. This catches wiring errors before PyInstaller runs.
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    httpd, port = launcher.create_http_server(root)
+    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        assert launcher.wait_health(base, 5.0), "AI-center launcher server did not become healthy"
+        with launcher.local_urlopen(base + "/", timeout=5.0) as response:
+            html = response.read().decode("utf-8")
+            csp = response.headers.get("Content-Security-Policy", "")
+            permissions = response.headers.get("Permissions-Policy", "")
+        assert "connect-src 'self'" in csp, "browser UI is allowed to connect to external origins"
+        assert "object-src 'none'" in csp and "frame-src 'none'" in csp, "browser embedding policy is too permissive"
+        assert "camera=()" in permissions and "microphone=()" in permissions, "browser device permissions are not disabled"
+        assert "/ai_center.js" in html and "/ai_center.css" in html, "AI Center assets are not injected"
+        assert "/ai_tag_live_sync.js" in html, "AI Tag live-sync asset is not injected"
+        assert "/ai_first_run.js" in html and "/ai_first_run.css" in html, "AI first-run assets are not injected"
+        assert 'id="tagCategoryNav"' in html and "Tag / 分类" in html, "Tag/category sidebar entry is missing"
+        assert '<button data-route="packs"><span>▦</span>图包 / 图册</button>' not in html, "legacy image-pack sidebar entry returned"
+
+        with launcher.local_urlopen(base + "/api/ai/overview", timeout=5.0) as response:
+            overview = json.loads(response.read().decode("utf-8"))
+        assert overview.get("ok") is True, "AI overview endpoint is unavailable"
+        assert overview["settings"]["backgroundMode"] == "balanced"
+        assert overview["settings"]["onboardingCompleted"] is False
+        assert overview["settings"]["aiOptIn"] is False
+        group_names = [group.get("name") for group in overview["settings"].get("groups", [])]
+        for expected in ("全部视频", "生活", "学习", "风景", "娱乐", "色情"):
+            assert expected in group_names, f"missing default AI Tag group: {expected}"
+
+        import ai_balanced_siglip
+        import siglip_encoder
+        assert ai_balanced_siglip.get_mode(root) == "balanced", "balanced AI mode was not activated"
+        assert getattr(siglip_encoder.SiglipOnnxEncoder, "_localhub_balanced_playback_patched", False) is True
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2.0)
+        httpd.server_close()
+
+
+
+from ai_tag_sync_support import AITagReconciler
+_test_settings = {"groups": [{"id":"all","enabled":True,"tags":[{"tag":"室内"},{"tag":"户外"},{"tag":"夜晚"}]}]}
+assert AITagReconciler._select([("室内",0.31),("户外",0.27),("夜晚",0.25)], _test_settings), "AI Tag selector returned an empty result for a separated group"
+
+print("launcher lifecycle, backend/browser privacy, offline onboarding, Tag navigation, and balanced AI smoke test passed")

@@ -24,7 +24,10 @@ def main() -> None:
     assert "hover-interactive" in js
     assert "lh-player-portrait" in js and "lh-player-portrait" in css
     assert "video.addEventListener('stalled'" in js and "video.addEventListener('waiting'" in js
+    assert "video.addEventListener('loadstart', hideInitialAnalysisNotice)" in js
+    assert "正在分析媒体" in js, "native loading must be able to release the diagnostic overlay"
     assert "/api/media/probe" not in js, "playback enhancement must not run a second probe chain"
+    assert "/api/io/activity" not in js, "playback enhancement must not add a second I/O scheduling controller"
     assert "startForcedTranscode" not in js, "watchdog must not auto-start hidden transcoding"
     assert "GATED_EXTS" not in js, "enhancement layer must not gate/remove smart_ui sources"
     assert "video.removeAttribute('src')" not in js, "enhancement layer must never clear the current source"
